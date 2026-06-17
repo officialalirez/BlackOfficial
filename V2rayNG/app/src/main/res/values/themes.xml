@@ -78,4 +78,11 @@
         <item name="colorPrimary">@color/color_fab_active</item>
     </style>
 
+    <style name="BlackTunDialogTheme" parent="Theme.Material3.DayNight.Dialog.Alert">
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:backgroundDimEnabled">true</item>
+        <item name="colorPrimary">@color/blacktun_blue</item>
+    </style>
+
 </resources>

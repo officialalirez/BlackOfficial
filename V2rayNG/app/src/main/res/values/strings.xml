@@ -1,11 +1,32 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name" translatable="false">v2rayNG</string>
+    <string name="app_name" translatable="false">BlackTun</string>
     <string name="app_widget_name">Switch</string>
     <string name="app_tile_name">Switch</string>
     <string name="app_tile_first_use">First use of this feature, please use the app to add server</string>
     <string name="navigation_drawer_open">Open navigation drawer</string>
     <string name="navigation_drawer_close">Close navigation drawer</string>
+    <string name="blacktun_connect">Connect</string>
+    <string name="blacktun_connected">Connected</string>
+    <string name="blacktun_tagline">Private tunnel with real-time latency selection</string>
+    <string name="blacktun_ready">برای اتصال، بهترین کانفیگ با کمترین پینگ انتخاب می‌شود</string>
+    <string name="blacktun_not_logged_in">هنوز وارد نشده‌اید</string>
+    <string name="blacktun_username_title">ورود با اشتراک</string>
+    <string name="blacktun_username_subtitle">نام کاربری اشتراک را وارد کنید تا BlackTun کانفیگ مناسب را پیدا کند</string>
+    <string name="blacktun_username_hint">نام کاربری</string>
+    <string name="blacktun_check_subscription">بررسی و دریافت کانفیگ</string>
+    <string name="blacktun_enter_username">نام کاربری را وارد کنید</string>
+    <string name="blacktun_username_not_found">نام کاربری در لیست اشتراک‌ها پیدا نشد</string>
+    <string name="blacktun_fetch_failed">دریافت کانفیگ ناموفق بود</string>
+    <string name="blacktun_no_config">کانفیگی برای این نام کاربری پیدا نشد</string>
+    <string name="blacktun_loaded_subscription">کانفیگ‌های اشتراک آماده‌اند</string>
+    <string name="blacktun_loaded_free">کانفیگ‌های رایگان آماده‌اند</string>
+    <string name="blacktun_pinging">در حال اندازه‌گیری پینگ واقعی کانفیگ‌ها...</string>
+    <string name="blacktun_selecting_best">بهترین کانفیگ انتخاب شد. در حال اتصال...</string>
+    <string name="blacktun_no_best_config">کانفیگی برای اتصال پیدا نشد</string>
+    <string name="blacktun_please_login_first">ابتدا با اشتراک یا ورود رایگان وارد شوید</string>
+    <string name="blacktun_vpn_permission_denied">اجازه اتصال VPN دریافت نشد</string>
+    <string name="blacktun_loading_source">در حال دریافت کانفیگ‌ها...</string>
     <string name="migration_success">Data migration success!</string>
     <string name="action_stop_service">Stop service</string>
     <string name="migration_fail">Data migration failed!</string>

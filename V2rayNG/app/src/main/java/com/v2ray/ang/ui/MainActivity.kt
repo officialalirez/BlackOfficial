@@ -8,6 +8,9 @@ import android.os.Bundle
 import android.view.KeyEvent
 import android.view.Menu
 import android.view.MenuItem
+import android.view.View
+import android.view.WindowManager
+import android.view.inputmethod.EditorInfo
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
@@ -17,13 +20,18 @@ import androidx.appcompat.widget.SearchView
 import androidx.core.content.ContextCompat
 import androidx.core.view.GravityCompat
 import androidx.core.view.isVisible
+import androidx.drawerlayout.widget.DrawerLayout
 import androidx.lifecycle.lifecycleScope
 import com.google.android.material.navigation.NavigationView
 import com.google.android.material.tabs.TabLayoutMediator
 import com.v2ray.ang.AppConfig
+import com.v2ray.ang.BuildConfig
 import com.v2ray.ang.R
 import com.v2ray.ang.core.CoreServiceManager
 import com.v2ray.ang.databinding.ActivityMainBinding
+import com.v2ray.ang.databinding.DialogBlacktunUsernameBinding
+import com.v2ray.ang.dto.UrlContentRequest
+import com.v2ray.ang.dto.entities.SubscriptionItem
 import com.v2ray.ang.enums.EConfigType
 import com.v2ray.ang.enums.PermissionType
 import com.v2ray.ang.extension.toast
@@ -33,13 +41,40 @@ import com.v2ray.ang.handler.MmkvManager
 import com.v2ray.ang.handler.SettingsChangeManager
 import com.v2ray.ang.handler.SettingsManager
 import com.v2ray.ang.handler.SubscriptionUpdater
+import com.v2ray.ang.util.HttpUtil
 import com.v2ray.ang.util.LogUtil
 import com.v2ray.ang.util.Utils
 import com.v2ray.ang.viewmodel.MainViewModel
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+
+private const val BLACKTUN_SUBSCRIPTION_ID = "blacktun_subscription"
+private const val BLACKTUN_FREE_ID = "blacktun_free"
+private const val BLACKTUN_PLAN_URL = "https://alirez.n-cpanel.xyz/Sub/Plans/Full.txt"
+private const val BLACKTUN_FREE_URL = "https://alirez.n-cpanel.xyz/Sub/Plans/Free.txt"
+private const val BLACKTUN_MODE_SUBSCRIPTION = "subscription"
+private const val BLACKTUN_MODE_FREE = "free"
+private const val PREF_BLACKTUN_MODE = "blacktun_mode"
+private const val PREF_BLACKTUN_USERNAME = "blacktun_username"
+private const val BLACKTUN_USER_AGENT = "BlackTun/${BuildConfig.VERSION_NAME}"
+private const val BLACKTUN_PING_TIMEOUT_MS = 45_000L
+
+private enum class BlackTunMode {
+    SUBSCRIPTION,
+    FREE
+}
+
+private data class BlackTunSource(
+    val mode: BlackTunMode,
+    val subId: String,
+    val otherSubId: String,
+    val remarks: String,
+    val url: String,
+    val username: String? = null
+)
 
 class MainActivity : HelperBaseActivity(), NavigationView.OnNavigationItemSelectedListener {
     private val binding by lazy {
@@ -49,10 +84,13 @@ class MainActivity : HelperBaseActivity(), NavigationView.OnNavigationItemSelect
     val mainViewModel: MainViewModel by viewModels()
     private lateinit var groupPagerAdapter: GroupPagerAdapter
     private var tabMediator: TabLayoutMediator? = null
+    private var blackTunConnectJob: Job? = null
 
     private val requestVpnPermission = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
         if (it.resultCode == RESULT_OK) {
             startV2Ray()
+        } else {
+            showBlackTunMessage(false, getString(R.string.blacktun_vpn_permission_denied))
         }
     }
     private val requestActivityLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
@@ -69,6 +107,11 @@ class MainActivity : HelperBaseActivity(), NavigationView.OnNavigationItemSelect
         super.onCreate(savedInstanceState)
         setContentView(binding.root)
         setupToolbar(binding.toolbar, false, getString(R.string.title_server))
+        binding.toolbar.visibility = View.GONE
+        binding.toolbar.navigationIcon = null
+        supportActionBar?.setDisplayHomeAsUpEnabled(false)
+        binding.drawerLayout.setDrawerLockMode(DrawerLayout.LOCK_MODE_LOCKED_CLOSED)
+        setupBlackTunOverlay()
 
         // setup viewpager and tablayout
         groupPagerAdapter = GroupPagerAdapter(this, emptyList())
@@ -124,9 +167,390 @@ class MainActivity : HelperBaseActivity(), NavigationView.OnNavigationItemSelect
         mainViewModel.initAssets(assets)
     }
 
+    private fun setupBlackTunOverlay() {
+        binding.blacktunOverlay.visibility = View.VISIBLE
+        binding.blacktunConnectButton.setOnClickListener { handleBlackTunConnectClick() }
+        binding.blacktunSubscriptionButton.setOnClickListener { showBlackTunUsernameDialog() }
+        binding.blacktunFreeButton.setOnClickListener { loadFreeConfigs() }
+        updateBlackTunSourceBadge()
+        applyRunningState(false, mainViewModel.isRunning.value == true)
+    }
+
+    private fun showBlackTunUsernameDialog() {
+        val dialogView = DialogBlacktunUsernameBinding.inflate(layoutInflater)
+        val dialog = AlertDialog.Builder(this, R.style.BlackTunDialogTheme)
+            .setView(dialogView.root)
+            .setCancelable(true)
+            .create()
+        dialog.show()
+        dialogView.blacktunUsernameInput.postDelayed({
+            dialogView.blacktunUsernameInput.requestFocus()
+            dialog.window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE)
+        }, 200)
+        dialogView.blacktunUsernameDone.setOnClickListener {
+            val username = dialogView.blacktunUsernameInput.text.toString().trim()
+            if (username.isBlank()) {
+                dialogView.blacktunUsernameLayout.error = getString(R.string.blacktun_enter_username)
+                return@setOnClickListener
+            }
+            dialog.dismiss()
+            loadSubscriptionConfigs(username)
+        }
+        dialogView.blacktunUsernameInput.setOnEditorActionListener { _, actionId, _ ->
+            if (actionId == EditorInfo.IME_ACTION_DONE) {
+                dialogView.blacktunUsernameDone.performClick()
+                true
+            } else {
+                false
+            }
+        }
+    }
+
+    private fun loadSubscriptionConfigs(username: String) {
+        val trimmedUsername = username.trim()
+        val source = BlackTunSource(
+            mode = BlackTunMode.SUBSCRIPTION,
+            subId = BLACKTUN_SUBSCRIPTION_ID,
+            otherSubId = BLACKTUN_FREE_ID,
+            remarks = "BlackTun $trimmedUsername",
+            url = "",
+            username = trimmedUsername
+        )
+        loadBlackTunConfigs(source) {
+            val planText = fetchBlackTunText(BLACKTUN_PLAN_URL).replace("&amp;", "&")
+            val subscriptionUrl = findSubscriptionUrlForUsername(planText, trimmedUsername)
+            if (subscriptionUrl.isNullOrBlank()) {
+                throw IllegalArgumentException("username_not_found")
+            }
+            val configText = fetchBlackTunText(subscriptionUrl)
+            source.copy(url = subscriptionUrl) to configText
+        }
+    }
+
+    private fun loadFreeConfigs() {
+        val source = BlackTunSource(
+            mode = BlackTunMode.FREE,
+            subId = BLACKTUN_FREE_ID,
+            otherSubId = BLACKTUN_SUBSCRIPTION_ID,
+            remarks = "BlackTun Free",
+            url = BLACKTUN_FREE_URL
+        )
+        loadBlackTunConfigs(source) {
+            source to fetchBlackTunText(BLACKTUN_FREE_URL)
+        }
+    }
+
+    private fun loadBlackTunConfigs(
+        source: BlackTunSource,
+        fetcher: suspend () -> Pair<BlackTunSource, String>
+    ) {
+        binding.blacktunConnectButton.isEnabled = false
+        binding.blacktunSubscriptionButton.isEnabled = false
+        binding.blacktunFreeButton.isEnabled = false
+        val previousJob = blackTunConnectJob
+        blackTunConnectJob = lifecycleScope.launch {
+            previousJob?.cancel()
+            previousJob?.join()
+            mainViewModel.realPingFinishedAction = null
+            showBlackTunLoading(getString(R.string.blacktun_loading_source))
+            saveBlackTunSource(source)
+            updateBlackTunSourceBadge()
+            try {
+                clearBlackTunSources(source)
+                val (finalSource, configText) = fetcher()
+                ensureBlackTunSubscription(finalSource)
+                val (count, countSub) = importBlackTunConfigText(configText, finalSource.subId)
+                if (count + countSub <= 0) {
+                    showBlackTunMessage(false, getString(R.string.blacktun_no_config))
+                    return@launch
+                }
+                mainViewModel.subscriptionIdChanged(finalSource.subId)
+                mainViewModel.reloadServerList()
+                setupGroupTab()
+                refreshGroupTabTitles()
+                saveBlackTunSource(finalSource)
+                updateBlackTunSourceBadge()
+                showBlackTunLoading(getString(R.string.blacktun_pinging))
+                pingAndSortBlackTun(finalSource.subId)
+                val successMessage = if (finalSource.mode == BlackTunMode.FREE) {
+                    getString(R.string.blacktun_loaded_free)
+                } else {
+                    getString(R.string.blacktun_loaded_subscription)
+                }
+                showBlackTunMessage(true, successMessage)
+            } catch (e: IllegalArgumentException) {
+                if (e.message == "username_not_found") {
+                    showBlackTunMessage(false, getString(R.string.blacktun_username_not_found))
+                } else {
+                    showBlackTunMessage(false, e.message ?: getString(R.string.blacktun_fetch_failed))
+                }
+            } catch (e: Exception) {
+                LogUtil.e(AppConfig.TAG, "BlackTun load failed", e)
+                showBlackTunMessage(false, getString(R.string.blacktun_fetch_failed))
+            } finally {
+                binding.blacktunConnectButton.isEnabled = true
+                binding.blacktunSubscriptionButton.isEnabled = true
+                binding.blacktunFreeButton.isEnabled = true
+                hideBlackTunLoading()
+            }
+        }
+    }
+
+    private fun clearBlackTunSources(source: BlackTunSource) {
+        if (mainViewModel.isRunning.value == true) {
+            CoreServiceManager.stopVService(this)
+        }
+        MmkvManager.removeSubscription(source.otherSubId)
+        MmkvManager.removeSubscription(source.subId)
+    }
+
+    private fun ensureBlackTunSubscription(source: BlackTunSource) {
+        val existing = MmkvManager.decodeSubscription(source.subId) ?: SubscriptionItem()
+        existing.remarks = source.remarks
+        existing.url = source.url
+        existing.enabled = true
+        existing.autoUpdate = false
+        existing.updateInterval = 1440
+        existing.allowInsecureUrl = false
+        MmkvManager.encodeSubscription(source.subId, existing)
+    }
+
+    private suspend fun importBlackTunConfigText(rawText: String, subId: String): Pair<Int, Int> {
+        val decodedText = Utils.decode(rawText)
+        val sourceText = if (
+            decodedText.isNotBlank() &&
+            decodedText != rawText &&
+            decodedText.lines().any { Utils.isValidSubUrl(it.trim()) } &&
+            rawText.lines().none { Utils.isValidSubUrl(it.trim()) }
+        ) {
+            decodedText
+        } else {
+            rawText
+        }
+        val configText = resolveBlackTunSubscriptionUrls(sourceText)
+        return AngConfigManager.importBatchConfig(configText, subId, false)
+    }
+
+    private suspend fun resolveBlackTunSubscriptionUrls(rawText: String): String {
+        var currentText = rawText.replace("&amp;", "&")
+        repeat(3) {
+            val subscriptionUrls = currentText.lines()
+                .map { it.trim() }
+                .filter { Utils.isValidSubUrl(it) }
+                .distinct()
+            if (subscriptionUrls.isEmpty()) {
+                return currentText
+            }
+            val fetched = subscriptionUrls
+                .mapNotNull { runCatching { fetchBlackTunText(it) }.getOrNull().ifBlank { null } }
+                .joinToString("\n")
+            if (fetched.isBlank()) {
+                return currentText
+            }
+            currentText = fetched
+        }
+        return currentText
+    }
+
+    private suspend fun pingAndSortBlackTun(subId: String) {
+        mainViewModel.subscriptionIdChanged(subId)
+        mainViewModel.reloadServerList()
+        if (mainViewModel.serversCache.isEmpty()) {
+            mainViewModel.realPingFinishedAction = null
+            return
+        }
+        var finished = false
+        mainViewModel.realPingFinishedAction = { status ->
+            if (status == "0") {
+                finished = true
+            }
+        }
+        try {
+            mainViewModel.testAllRealPing()
+            val deadline = System.currentTimeMillis() + BLACKTUN_PING_TIMEOUT_MS
+            while (!finished && System.currentTimeMillis() < deadline) {
+                delay(250)
+            }
+        } finally {
+            mainViewModel.realPingFinishedAction = null
+        }
+        mainViewModel.sortByTestResults()
+        withContext(Dispatchers.Main) {
+            mainViewModel.reloadServerList()
+            refreshGroupTabTitles()
+        }
+    }
+
+    private suspend fun fetchBlackTunText(url: String): String = withContext(Dispatchers.IO) {
+        val idnUrl = runCatching { HttpUtil.toIdnUrl(url) }.getOrDefault(url)
+        val directRequest = UrlContentRequest(
+            url = idnUrl,
+            timeout = 15000,
+            userAgent = BLACKTUN_USER_AGENT
+        )
+        runCatching { HttpUtil.getUrlContentWithUserAgent(directRequest) }
+            .getOrNull()
+            ?.ifBlank { null }
+            ?: runCatching {
+                HttpUtil.getUrlContent(UrlContentRequest(url = url, timeout = 15000))
+            }.getOrNull()
+            .orEmpty()
+    }
+
+    private fun findSubscriptionUrlForUsername(content: String, username: String): String? {
+        if (username.isBlank()) {
+            return null
+        }
+        val wanted = username.trim()
+        return content.lines()
+            .map { it.trim() }
+            .filter { it.isNotEmpty() && Utils.isValidUrl(it) }
+            .distinct()
+            .firstOrNull { line ->
+                val querySub = runCatching { Uri.parse(line).getQueryParameter("sub") }.getOrNull()
+                val decodedQuerySub = querySub?.let { Uri.decode(it) }
+                decodedQuerySub?.equals(wanted, ignoreCase = true) == true ||
+                        Regex("(?:^|[?&])sub=([^&#]+)", RegexOption.IGNORE_CASE)
+                            .find(line)
+                            ?.groupValues
+                            ?.getOrNull(1)
+                            ?.let { Uri.decode(it).equals(wanted, ignoreCase = true) } == true
+            }
+    }
+
+    private fun handleBlackTunConnectClick() {
+        val source = currentBlackTunSource()
+        if (source == null) {
+            showBlackTunMessage(false, getString(R.string.blacktun_please_login_first))
+            return
+        }
+        if (mainViewModel.isRunning.value == true) {
+            CoreServiceManager.stopVService(this)
+            return
+        }
+        if (blackTunConnectJob?.isActive == true) {
+            return
+        }
+        blackTunConnectJob = lifecycleScope.launch {
+            binding.blacktunConnectButton.isEnabled = false
+            showBlackTunLoading(getString(R.string.blacktun_pinging))
+            try {
+                pingAndSortBlackTun(source.subId)
+                val bestGuid = findBestBlackTunServer(source.subId)
+                if (bestGuid.isNullOrBlank()) {
+                    showBlackTunMessage(false, getString(R.string.blacktun_no_best_config))
+                    return@launch
+                }
+                MmkvManager.setSelectServer(bestGuid)
+                mainViewModel.reloadServerList()
+                refreshGroupTabTitles()
+                showBlackTunMessage(true, getString(R.string.blacktun_selecting_best))
+                if (SettingsManager.isVpnMode()) {
+                    val intent = VpnService.prepare(this@MainActivity)
+                    if (intent == null) {
+                        startV2Ray()
+                    } else {
+                        requestVpnPermission.launch(intent)
+                    }
+                } else {
+                    startV2Ray()
+                }
+            } catch (e: Exception) {
+                LogUtil.e(AppConfig.TAG, "BlackTun connect failed", e)
+                showBlackTunMessage(false, getString(R.string.blacktun_fetch_failed))
+            } finally {
+                binding.blacktunConnectButton.isEnabled = true
+                hideBlackTunLoading()
+            }
+        }
+    }
+
+    private fun findBestBlackTunServer(subId: String): String? {
+        val guids = MmkvManager.decodeServerList(subId)
+        if (guids.isEmpty()) {
+            return null
+        }
+        return guids
+            .map { guid ->
+                val delay = MmkvManager.decodeServerAffiliationInfo(guid)?.testDelayMillis ?: Long.MAX_VALUE
+                val score = when {
+                    delay > 0L -> delay
+                    delay == 0L -> Long.MAX_VALUE - 1L
+                    else -> Long.MAX_VALUE
+                }
+                guid to score
+            }
+            .sortedWith(compareBy<Pair<String, Long>> { it.second }.thenBy { it.first })
+            .firstOrNull()
+            ?.first
+    }
+
+    private fun currentBlackTunSource(): BlackTunSource? {
+        val mode = MmkvManager.decodeSettingsString(PREF_BLACKTUN_MODE, "")
+        val username = MmkvManager.decodeSettingsString(PREF_BLACKTUN_USERNAME, "").orEmpty().trim()
+        return when (mode) {
+            BLACKTUN_MODE_SUBSCRIPTION -> {
+                if (username.isBlank()) null else BlackTunSource(
+                    mode = BlackTunMode.SUBSCRIPTION,
+                    subId = BLACKTUN_SUBSCRIPTION_ID,
+                    otherSubId = BLACKTUN_FREE_ID,
+                    remarks = "BlackTun $username",
+                    url = "",
+                    username = username
+                )
+            }
+            BLACKTUN_MODE_FREE -> BlackTunSource(
+                mode = BlackTunMode.FREE,
+                subId = BLACKTUN_FREE_ID,
+                otherSubId = BLACKTUN_SUBSCRIPTION_ID,
+                remarks = "BlackTun Free",
+                url = BLACKTUN_FREE_URL
+            )
+            else -> null
+        }
+    }
+
+    private fun saveBlackTunSource(source: BlackTunSource) {
+        MmkvManager.encodeSettings(PREF_BLACKTUN_MODE, source.mode.name)
+        MmkvManager.encodeSettings(PREF_BLACKTUN_USERNAME, source.username.orEmpty())
+    }
+
+    private fun updateBlackTunSourceBadge() {
+        val source = currentBlackTunSource()
+        binding.blacktunSourceBadge.text = when {
+            source == null -> getString(R.string.blacktun_not_logged_in)
+            source.mode == BlackTunMode.FREE -> "رایگان"
+            else -> "کاربر: ${source.username.orEmpty()}"
+        }
+    }
+
+    private fun showBlackTunLoading(text: String) {
+        binding.blacktunProgress.visibility = View.VISIBLE
+        binding.blacktunStatus.text = text
+    }
+
+    private fun hideBlackTunLoading() {
+        binding.blacktunProgress.visibility = View.GONE
+        binding.blacktunStatus.text = getString(R.string.blacktun_ready)
+    }
+
+    private fun showBlackTunMessage(success: Boolean, text: String) {
+        binding.blacktunMessage.visibility = View.VISIBLE
+        binding.blacktunMessageCard.visibility = View.VISIBLE
+        binding.blacktunMessage.text = text
+        binding.blacktunMessage.setTextColor(ContextCompat.getColor(this, if (success) R.color.blacktun_success else R.color.blacktun_error))
+        binding.blacktunMessageCard.strokeColor = ContextCompat.getColor(this, if (success) R.color.blacktun_success else R.color.blacktun_error)
+    }
+
     private fun setupGroupTab() {
         val groups = mainViewModel.getSubscriptions(this)
         groupPagerAdapter.update(groups)
+        if (groups.isEmpty()) {
+            tabMediator?.detach()
+            tabMediator = null
+            binding.tabGroup.isVisible = false
+            return
+        }
 
         tabMediator?.detach()
         tabMediator = TabLayoutMediator(binding.tabGroup, binding.viewPager) { tab, position ->
@@ -222,12 +646,22 @@ class MainActivity : HelperBaseActivity(), NavigationView.OnNavigationItemSelect
             binding.fab.contentDescription = getString(R.string.action_stop_service)
             setTestState(getString(R.string.connection_connected))
             binding.layoutTest.isFocusable = true
+
+            binding.blacktunConnectButton.text = getString(R.string.blacktun_connected)
+            binding.blacktunConnectButton.backgroundTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.blacktun_green))
+            binding.blacktunConnectButton.contentDescription = getString(R.string.action_stop_service)
+            binding.blacktunConnectButton.isEnabled = blackTunConnectJob?.isActive != true
         } else {
             binding.fab.setImageResource(R.drawable.ic_play_24dp)
             binding.fab.backgroundTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.color_fab_inactive))
             binding.fab.contentDescription = getString(R.string.tasker_start_service)
             setTestState(getString(R.string.connection_not_connected))
             binding.layoutTest.isFocusable = false
+
+            binding.blacktunConnectButton.text = getString(R.string.blacktun_connect)
+            binding.blacktunConnectButton.backgroundTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.blacktun_blue))
+            binding.blacktunConnectButton.contentDescription = getString(R.string.tasker_start_service)
+            binding.blacktunConnectButton.isEnabled = blackTunConnectJob?.isActive != true
         }
     }
 
@@ -690,6 +1124,7 @@ class MainActivity : HelperBaseActivity(), NavigationView.OnNavigationItemSelect
     }
 
     override fun onDestroy() {
+        blackTunConnectJob?.cancel()
         tabMediator?.detach()
         super.onDestroy()
     }

@@ -54,4 +54,13 @@
     <color name="md_theme_shadow">#000000</color>
     <color name="md_theme_surfaceTint">#000000</color>
     <color name="md_theme_scrim">#000000</color>
+
+    <color name="blacktun_blue">#1E88FF</color>
+    <color name="blacktun_green">#35D07F</color>
+    <color name="blacktun_surface">#05070A</color>
+    <color name="blacktun_card">#0B1220</color>
+    <color name="blacktun_card_stroke">#1E3A5F</color>
+    <color name="blacktun_text_muted">#9FB3C8</color>
+    <color name="blacktun_error">#FF5A5F</color>
+    <color name="blacktun_success">#35D07F</color>
 </resources>

@@ -46,6 +46,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val isRunning by lazy { MutableLiveData<Boolean>() }
     val updateListAction by lazy { MutableLiveData<Int>() }
     val updateTestResultAction by lazy { MutableLiveData<String>() }
+    var realPingFinishedAction: ((String?) -> Unit)? = null
     private val tcpingTestScope by lazy { CoroutineScope(Dispatchers.IO) }
 
     /**
@@ -499,6 +500,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
                 AppConfig.MSG_MEASURE_CONFIG_FINISH -> {
                     val content = intent.getStringExtra("content")
+                    realPingFinishedAction?.invoke(content)
                     if (content == "0") {
                         onTestsFinished()
                     }
