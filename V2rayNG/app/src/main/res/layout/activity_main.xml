@@ -115,7 +115,9 @@
                 </FrameLayout>
             </androidx.coordinatorlayout.widget.CoordinatorLayout>
 
-            <include layout="@layout/blacktun_overlay" />
+            <include
+                android:id="@+id/blacktun_overlay_include"
+                layout="@layout/blacktun_overlay" />
         </RelativeLayout>
     </LinearLayout>
 

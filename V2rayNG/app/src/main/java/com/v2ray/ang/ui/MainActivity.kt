@@ -29,6 +29,7 @@ import com.v2ray.ang.BuildConfig
 import com.v2ray.ang.R
 import com.v2ray.ang.core.CoreServiceManager
 import com.v2ray.ang.databinding.ActivityMainBinding
+import com.v2ray.ang.databinding.BlacktunOverlayBinding
 import com.v2ray.ang.databinding.DialogBlacktunUsernameBinding
 import com.v2ray.ang.dto.UrlContentRequest
 import com.v2ray.ang.dto.entities.SubscriptionItem
@@ -79,6 +80,9 @@ private data class BlackTunSource(
 class MainActivity : HelperBaseActivity(), NavigationView.OnNavigationItemSelectedListener {
     private val binding by lazy {
         ActivityMainBinding.inflate(layoutInflater)
+    }
+    private val blackTunBinding by lazy {
+        BlacktunOverlayBinding.bind(binding.blacktunOverlayInclude.root)
     }
 
     val mainViewModel: MainViewModel by viewModels()
@@ -168,10 +172,10 @@ class MainActivity : HelperBaseActivity(), NavigationView.OnNavigationItemSelect
     }
 
     private fun setupBlackTunOverlay() {
-        binding.blacktunOverlay.visibility = View.VISIBLE
-        binding.blacktunConnectButton.setOnClickListener { handleBlackTunConnectClick() }
-        binding.blacktunSubscriptionButton.setOnClickListener { showBlackTunUsernameDialog() }
-        binding.blacktunFreeButton.setOnClickListener { loadFreeConfigs() }
+        blackTunBinding.blacktunOverlay.visibility = View.VISIBLE
+        blackTunBinding.blacktunConnectButton.setOnClickListener { handleBlackTunConnectClick() }
+        blackTunBinding.blacktunSubscriptionButton.setOnClickListener { showBlackTunUsernameDialog() }
+        blackTunBinding.blacktunFreeButton.setOnClickListener { loadFreeConfigs() }
         updateBlackTunSourceBadge()
         applyRunningState(false, mainViewModel.isRunning.value == true)
     }
@@ -244,9 +248,9 @@ class MainActivity : HelperBaseActivity(), NavigationView.OnNavigationItemSelect
         source: BlackTunSource,
         fetcher: suspend () -> Pair<BlackTunSource, String>
     ) {
-        binding.blacktunConnectButton.isEnabled = false
-        binding.blacktunSubscriptionButton.isEnabled = false
-        binding.blacktunFreeButton.isEnabled = false
+        blackTunBinding.blacktunConnectButton.isEnabled = false
+        blackTunBinding.blacktunSubscriptionButton.isEnabled = false
+        blackTunBinding.blacktunFreeButton.isEnabled = false
         val previousJob = blackTunConnectJob
         blackTunConnectJob = lifecycleScope.launch {
             previousJob?.cancel()
@@ -288,9 +292,9 @@ class MainActivity : HelperBaseActivity(), NavigationView.OnNavigationItemSelect
                 LogUtil.e(AppConfig.TAG, "BlackTun load failed", e)
                 showBlackTunMessage(false, getString(R.string.blacktun_fetch_failed))
             } finally {
-                binding.blacktunConnectButton.isEnabled = true
-                binding.blacktunSubscriptionButton.isEnabled = true
-                binding.blacktunFreeButton.isEnabled = true
+                blackTunBinding.blacktunConnectButton.isEnabled = true
+                blackTunBinding.blacktunSubscriptionButton.isEnabled = true
+                blackTunBinding.blacktunFreeButton.isEnabled = true
                 hideBlackTunLoading()
             }
         }
@@ -342,7 +346,7 @@ class MainActivity : HelperBaseActivity(), NavigationView.OnNavigationItemSelect
                 return currentText
             }
             val fetched = subscriptionUrls
-                .mapNotNull { runCatching { fetchBlackTunText(it) }.getOrNull().ifBlank { null } }
+                .mapNotNull { runCatching { fetchBlackTunText(it) }.getOrNull().orEmpty().ifBlank { null } }
                 .joinToString("\n")
             if (fetched.isBlank()) {
                 return currentText
@@ -432,7 +436,7 @@ class MainActivity : HelperBaseActivity(), NavigationView.OnNavigationItemSelect
             return
         }
         blackTunConnectJob = lifecycleScope.launch {
-            binding.blacktunConnectButton.isEnabled = false
+            blackTunBinding.blacktunConnectButton.isEnabled = false
             showBlackTunLoading(getString(R.string.blacktun_pinging))
             try {
                 pingAndSortBlackTun(source.subId)
@@ -459,7 +463,7 @@ class MainActivity : HelperBaseActivity(), NavigationView.OnNavigationItemSelect
                 LogUtil.e(AppConfig.TAG, "BlackTun connect failed", e)
                 showBlackTunMessage(false, getString(R.string.blacktun_fetch_failed))
             } finally {
-                binding.blacktunConnectButton.isEnabled = true
+                blackTunBinding.blacktunConnectButton.isEnabled = true
                 hideBlackTunLoading()
             }
         }
@@ -517,7 +521,7 @@ class MainActivity : HelperBaseActivity(), NavigationView.OnNavigationItemSelect
 
     private fun updateBlackTunSourceBadge() {
         val source = currentBlackTunSource()
-        binding.blacktunSourceBadge.text = when {
+        blackTunBinding.blacktunSourceBadge.text = when {
             source == null -> getString(R.string.blacktun_not_logged_in)
             source.mode == BlackTunMode.FREE -> "رایگان"
             else -> "کاربر: ${source.username.orEmpty()}"
@@ -525,21 +529,21 @@ class MainActivity : HelperBaseActivity(), NavigationView.OnNavigationItemSelect
     }
 
     private fun showBlackTunLoading(text: String) {
-        binding.blacktunProgress.visibility = View.VISIBLE
-        binding.blacktunStatus.text = text
+        blackTunBinding.blacktunProgress.visibility = View.VISIBLE
+        blackTunBinding.blacktunStatus.text = text
     }
 
     private fun hideBlackTunLoading() {
-        binding.blacktunProgress.visibility = View.GONE
-        binding.blacktunStatus.text = getString(R.string.blacktun_ready)
+        blackTunBinding.blacktunProgress.visibility = View.GONE
+        blackTunBinding.blacktunStatus.text = getString(R.string.blacktun_ready)
     }
 
     private fun showBlackTunMessage(success: Boolean, text: String) {
-        binding.blacktunMessage.visibility = View.VISIBLE
-        binding.blacktunMessageCard.visibility = View.VISIBLE
-        binding.blacktunMessage.text = text
-        binding.blacktunMessage.setTextColor(ContextCompat.getColor(this, if (success) R.color.blacktun_success else R.color.blacktun_error))
-        binding.blacktunMessageCard.strokeColor = ContextCompat.getColor(this, if (success) R.color.blacktun_success else R.color.blacktun_error)
+        blackTunBinding.blacktunMessage.visibility = View.VISIBLE
+        blackTunBinding.blacktunMessageCard.visibility = View.VISIBLE
+        blackTunBinding.blacktunMessage.text = text
+        blackTunBinding.blacktunMessage.setTextColor(ContextCompat.getColor(this, if (success) R.color.blacktun_success else R.color.blacktun_error))
+        blackTunBinding.blacktunMessageCard.strokeColor = ContextCompat.getColor(this, if (success) R.color.blacktun_success else R.color.blacktun_error)
     }
 
     private fun setupGroupTab() {
@@ -647,10 +651,10 @@ class MainActivity : HelperBaseActivity(), NavigationView.OnNavigationItemSelect
             setTestState(getString(R.string.connection_connected))
             binding.layoutTest.isFocusable = true
 
-            binding.blacktunConnectButton.text = getString(R.string.blacktun_connected)
-            binding.blacktunConnectButton.backgroundTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.blacktun_green))
-            binding.blacktunConnectButton.contentDescription = getString(R.string.action_stop_service)
-            binding.blacktunConnectButton.isEnabled = blackTunConnectJob?.isActive != true
+            blackTunBinding.blacktunConnectButton.text = getString(R.string.blacktun_connected)
+            blackTunBinding.blacktunConnectButton.backgroundTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.blacktun_green))
+            blackTunBinding.blacktunConnectButton.contentDescription = getString(R.string.action_stop_service)
+            blackTunBinding.blacktunConnectButton.isEnabled = blackTunConnectJob?.isActive != true
         } else {
             binding.fab.setImageResource(R.drawable.ic_play_24dp)
             binding.fab.backgroundTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.color_fab_inactive))
@@ -658,10 +662,10 @@ class MainActivity : HelperBaseActivity(), NavigationView.OnNavigationItemSelect
             setTestState(getString(R.string.connection_not_connected))
             binding.layoutTest.isFocusable = false
 
-            binding.blacktunConnectButton.text = getString(R.string.blacktun_connect)
-            binding.blacktunConnectButton.backgroundTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.blacktun_blue))
-            binding.blacktunConnectButton.contentDescription = getString(R.string.tasker_start_service)
-            binding.blacktunConnectButton.isEnabled = blackTunConnectJob?.isActive != true
+            blackTunBinding.blacktunConnectButton.text = getString(R.string.blacktun_connect)
+            blackTunBinding.blacktunConnectButton.backgroundTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.blacktun_blue))
+            blackTunBinding.blacktunConnectButton.contentDescription = getString(R.string.tasker_start_service)
+            blackTunBinding.blacktunConnectButton.isEnabled = blackTunConnectJob?.isActive != true
         }
     }
 
