@@ -589,20 +589,30 @@ class MainActivity : HelperBaseActivity(), NavigationView.OnNavigationItemSelect
             showBlackTunMessage(false, getString(R.string.blacktun_please_login_first))
             return
         }
+
+        // If already running -> stop
         if (mainViewModel.isRunning.value == true || CoreServiceManager.isRunning()) {
             CoreServiceManager.stopVService(this)
             return
         }
-        if (blackTunConnectJob?.isActive == true) {
+
+        if (blackTunConnectJob?.isActive == true || blackTunSelectorJob?.isActive == true) {
             return
         }
-        if (blackTunSelectorJob?.isActive == true) {
-            return
-        }
+
+        // Visual optimistic state: Connect is only UI; backend start is done in background service.
+        // Do NOT wait for isRunning to become true.
+        blackTunBinding.blacktunConnectButton.isEnabled = false
+        blackTunBinding.blacktunProgress.visibility = View.VISIBLE
+        blackTunBinding.blacktunStatus.text = getString(R.string.blacktun_connected)
+        blackTunBinding.blacktunConnectButton.text = getString(R.string.blacktun_connected)
+        blackTunBinding.blacktunConnectButton.backgroundTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.blacktun_green))
+        blackTunBinding.blacktunConnectButton.contentDescription = getString(R.string.action_stop_service)
+
+        showBlackTunLoading(getString(R.string.blacktun_connecting))
+
         val job = lifecycleScope.launch {
             val self = coroutineContext[Job]
-            blackTunBinding.blacktunConnectButton.isEnabled = false
-            showBlackTunLoading(getString(R.string.blacktun_connecting))
             try {
                 val connectGuid = getBlackTunConnectGuid(source.subId)
                 if (connectGuid.isNullOrBlank()) {
@@ -613,29 +623,35 @@ class MainActivity : HelperBaseActivity(), NavigationView.OnNavigationItemSelect
                 mainViewModel.reloadServerList()
                 refreshGroupTabTitles()
                 showBlackTunMessage(true, getString(R.string.blacktun_selecting_best))
-                val started = startBlackTunV2RayWithPermission()
-                if (!started) {
-                    showBlackTunMessage(false, getString(R.string.blacktun_no_best_config))
-                }
+
+                // start service in background (no UI responsibility)
+                startBlackTunV2RayWithPermission()
             } catch (e: CancellationException) {
                 throw e
-            } catch (e: Exception) {
-                LogUtil.e(AppConfig.TAG, "BlackTun connect failed", e)
-                showBlackTunMessage(false, e.message ?: getString(R.string.blacktun_connect_failed))
+            } catch (t: Throwable) {
+                LogUtil.e(AppConfig.TAG, "BlackTun connect failed", t)
+                showBlackTunMessage(false, t.message ?: getString(R.string.blacktun_connect_failed))
             } finally {
                 if (blackTunConnectJob === self) {
                     blackTunConnectJob = null
                 }
+
+                // If service is NOT running anymore, revert UI to ready.
                 val active = mainViewModel.isRunning.value == true || CoreServiceManager.isRunning()
                 if (active) {
                     blackTunBinding.blacktunProgress.visibility = View.GONE
                     blackTunBinding.blacktunStatus.text = getString(R.string.blacktun_connected)
+                    applyRunningState(false, true)
                 } else {
+                    // revert only when backend confirmed not running
                     hideBlackTunLoading()
+                    applyRunningState(false, false)
                 }
-                applyRunningState(false, active)
+
+                blackTunBinding.blacktunConnectButton.isEnabled = blackTunConnectJob?.isActive != true
             }
         }
+
         blackTunConnectJob = job
     }
 

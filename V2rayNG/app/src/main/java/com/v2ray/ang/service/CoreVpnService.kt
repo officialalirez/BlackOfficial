@@ -113,8 +113,13 @@ class CoreVpnService : VpnService(), ServiceControl {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         LogUtil.i(AppConfig.TAG, "StartCore-VPN: Service command received")
         NotificationManager.showNotification(null)
-        setupVpnService()
-        startService()
+        try {
+            setupVpnService()
+            startService()
+        } catch (t: Throwable) {
+            LogUtil.e(AppConfig.TAG, "StartCore-VPN: onStartCommand crash", t)
+            // Do not hard-stop here; allow service to be restarted by OS if needed.
+        }
         return START_STICKY
         //return super.onStartCommand(intent, flags, startId)
     }
@@ -158,17 +163,29 @@ class CoreVpnService : VpnService(), ServiceControl {
         val prepare = prepare(this)
         if (prepare != null) {
             LogUtil.e(AppConfig.TAG, "StartCore-VPN: Permission not granted")
+            // UI layer will revert; keep service lifecycle safe.
             stopSelf()
             return
         }
 
-        if (configureVpnService() != true) {
-            LogUtil.e(AppConfig.TAG, "StartCore-VPN: Configuration failed")
+        try {
+            if (configureVpnService() != true) {
+                LogUtil.e(AppConfig.TAG, "StartCore-VPN: Configuration failed")
+                stopSelf()
+                return
+            }
+        } catch (t: Throwable) {
+            LogUtil.e(AppConfig.TAG, "StartCore-VPN: configureVpnService exception", t)
             stopSelf()
             return
         }
 
-        runTun2socks()
+        try {
+            runTun2socks()
+        } catch (t: Throwable) {
+            LogUtil.e(AppConfig.TAG, "StartCore-VPN: runTun2socks exception", t)
+            // Let core loop decide; don't crash service.
+        }
     }
 
     /**
