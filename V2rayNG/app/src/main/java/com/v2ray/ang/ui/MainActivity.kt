@@ -613,15 +613,15 @@ class MainActivity : HelperBaseActivity(), NavigationView.OnNavigationItemSelect
                 mainViewModel.reloadServerList()
                 refreshGroupTabTitles()
                 showBlackTunMessage(true, getString(R.string.blacktun_selecting_best))
-                val started = startBlackTunV2RayWithPermission(connectGuid)
+                val started = startBlackTunV2RayWithPermission()
                 if (!started) {
-                    showBlackTunMessage(false, getString(R.string.blacktun_start_failed))
+                    showBlackTunMessage(false, getString(R.string.blacktun_no_best_config))
                 }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 LogUtil.e(AppConfig.TAG, "BlackTun connect failed", e)
-                showBlackTunMessage(false, e.message ?: getString(R.string.blacktun_start_failed))
+                showBlackTunMessage(false, e.message ?: getString(R.string.blacktun_connect_failed))
             } finally {
                 if (blackTunConnectJob === self) {
                     blackTunConnectJob = null
@@ -639,14 +639,7 @@ class MainActivity : HelperBaseActivity(), NavigationView.OnNavigationItemSelect
         blackTunConnectJob = job
     }
 
-    private suspend fun startBlackTunV2RayWithPermission(guid: String?): Boolean {
-        if (CoreServiceManager.isRunning() || mainViewModel.isRunning.value == true) {
-            CoreServiceManager.stopVService(this)
-            waitForBlackTunStopped()
-        }
-        if (guid != null) {
-            MmkvManager.setSelectServer(guid)
-        }
+    private suspend fun startBlackTunV2RayWithPermission(): Boolean {
         if (SettingsManager.isVpnMode()) {
             val intent = VpnService.prepare(this)
             if (intent != null) {
@@ -663,26 +656,7 @@ class MainActivity : HelperBaseActivity(), NavigationView.OnNavigationItemSelect
                 }
             }
         }
-        CoreServiceManager.startVService(this)
-        return waitForBlackTunRunning()
-    }
-
-    private suspend fun waitForBlackTunRunning(timeoutMillis: Long = 10_000L): Boolean {
-        val deadline = System.currentTimeMillis() + timeoutMillis
-        while (System.currentTimeMillis() < deadline) {
-            if (mainViewModel.isRunning.value == true || CoreServiceManager.isRunning()) {
-                return true
-            }
-            delay(100)
-        }
-        return false
-    }
-
-    private suspend fun waitForBlackTunStopped(timeoutMillis: Long = 2_000L) {
-        val deadline = System.currentTimeMillis() + timeoutMillis
-        while ((mainViewModel.isRunning.value == true || CoreServiceManager.isRunning()) && System.currentTimeMillis() < deadline) {
-            delay(100)
-        }
+        return CoreServiceManager.startVServiceFromToggle(this)
     }
 
     private fun showBlackTunServerSelector() {
@@ -1279,24 +1253,24 @@ class MainActivity : HelperBaseActivity(), NavigationView.OnNavigationItemSelect
             } else {
                 lifecycleScope.launch {
                     try {
-                        startBlackTunV2RayWithPermission(null)
+                        startBlackTunV2RayWithPermission()
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Exception) {
                         LogUtil.e(AppConfig.TAG, "FAB connect failed", e)
-                        toastError(e.message ?: getString(R.string.blacktun_fetch_failed))
+                        toastError(e.message ?: getString(R.string.blacktun_connect_failed))
                     }
                 }
             }
         } else {
             lifecycleScope.launch {
                 try {
-                    startBlackTunV2RayWithPermission(null)
+                        startBlackTunV2RayWithPermission()
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
                     LogUtil.e(AppConfig.TAG, "FAB connect failed", e)
-                    toastError(e.message ?: getString(R.string.blacktun_fetch_failed))
+                    toastError(e.message ?: getString(R.string.blacktun_connect_failed))
                 }
             }
         }

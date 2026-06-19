@@ -24,7 +24,7 @@
     <string name="blacktun_pinging">در حال اندازه‌گیری پینگ واقعی کانفیگ‌ها...</string>
     <string name="blacktun_selecting_best">کانفیگ انتخاب شد. در حال اتصال...</string>
     <string name="blacktun_connecting">در حال اتصال...</string>
-    <string name="blacktun_start_failed">اتصال شروع نشد. کانفیگ انتخاب‌شده را بررسی کنید</string>
+    <string name="blacktun_connect_failed">اتصال انجام نشد</string>
     <string name="blacktun_no_best_config">کانفیگی برای اتصال پیدا نشد</string>
     <string name="blacktun_please_login_first">ابتدا با اشتراک یا ورود رایگان وارد شوید</string>
     <string name="blacktun_vpn_permission_denied">اجازه اتصال VPN دریافت نشد</string>
