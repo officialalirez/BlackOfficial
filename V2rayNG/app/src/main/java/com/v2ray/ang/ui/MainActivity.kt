@@ -694,7 +694,7 @@ class MainActivity : HelperBaseActivity(), NavigationView.OnNavigationItemSelect
             radius = dp(28).toFloat()
             setCardBackgroundColor(ContextCompat.getColor(this@MainActivity, R.color.blacktun_card))
             strokeColor = ContextCompat.getColor(this@MainActivity, R.color.blacktun_card_stroke)
-            strokeWidth = dp(1).toFloat()
+            strokeWidth = dp(1)
             useCompatPadding = false
         }
         val container = LinearLayout(this).apply {
@@ -762,7 +762,7 @@ class MainActivity : HelperBaseActivity(), NavigationView.OnNavigationItemSelect
             radius = dp(22).toFloat()
             setCardBackgroundColor(ContextCompat.getColor(this@MainActivity, R.color.blacktun_surface))
             strokeColor = ContextCompat.getColor(this@MainActivity, R.color.blacktun_card_stroke)
-            strokeWidth = dp(1).toFloat()
+            strokeWidth = dp(1)
             useCompatPadding = false
         }
         val layout = LinearLayout(this).apply {
@@ -802,7 +802,7 @@ class MainActivity : HelperBaseActivity(), NavigationView.OnNavigationItemSelect
             radius = dp(22).toFloat()
             setCardBackgroundColor(ContextCompat.getColor(this@MainActivity, R.color.blacktun_card))
             strokeColor = ContextCompat.getColor(this@MainActivity, R.color.blacktun_blue)
-            strokeWidth = dp(1).toFloat()
+            strokeWidth = dp(1)
             isClickable = true
             isFocusable = true
             useCompatPadding = false
@@ -897,7 +897,7 @@ class MainActivity : HelperBaseActivity(), NavigationView.OnNavigationItemSelect
             radius = dp(22).toFloat()
             setCardBackgroundColor(ContextCompat.getColor(this@MainActivity, R.color.blacktun_card))
             strokeColor = ContextCompat.getColor(this@MainActivity, R.color.blacktun_card_stroke)
-            strokeWidth = dp(1).toFloat()
+            strokeWidth = dp(1)
             isClickable = true
             isFocusable = true
             useCompatPadding = false
