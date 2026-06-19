@@ -1,5 +1,6 @@
 package com.blacktun.hm.ui
 
+import android.content.Context
 import android.content.Intent
 import android.content.res.ColorStateList
 import android.graphics.Typeface
@@ -11,10 +12,11 @@ import android.view.KeyEvent
 import android.view.Menu
 import android.view.MenuItem
 import android.view.View
+import android.view.ViewGroup
 import android.view.WindowManager
 import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InputMethodManager
 import android.widget.LinearLayout
-import android.widget.ScrollView
 import android.widget.TextView
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
@@ -27,6 +29,9 @@ import androidx.core.view.GravityCompat
 import androidx.core.view.isVisible
 import androidx.drawerlayout.widget.DrawerLayout
 import androidx.lifecycle.lifecycleScope
+import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.recyclerview.widget.RecyclerView
+import com.google.android.material.card.MaterialCardView
 import com.google.android.material.navigation.NavigationView
 import com.google.android.material.tabs.TabLayoutMediator
 import com.blacktun.hm.AppConfig
@@ -72,6 +77,7 @@ private const val PREF_BLACKTUN_USERNAME = "blacktun_username"
 private const val PREF_BLACKTUN_SELECTED_GUID = "blacktun_selected_guid"
 private const val BLACKTUN_USER_AGENT = "BlackTun/${BuildConfig.VERSION_NAME}"
 private const val BLACKTUN_PING_TIMEOUT_MS = 45_000L
+private const val BLACKTUN_MESSAGE_AUTO_HIDE_MS = 5_000L
 
 private enum class BlackTunMode {
     SUBSCRIPTION,
@@ -106,16 +112,22 @@ class MainActivity : HelperBaseActivity(), NavigationView.OnNavigationItemSelect
     private var tabMediator: TabLayoutMediator? = null
     private var blackTunConnectJob: Job? = null
     private var blackTunSelectorJob: Job? = null
+    private var blackTunMessageJob: Job? = null
+    private var blackTunServerDialog: AlertDialog? = null
+    private var blackTunServerAdapter: BlackTunServerAdapter? = null
+    private var blackTunAutoSelectRow: MaterialCardView? = null
     private var blackTunPermissionContinuation: CancellableContinuation<Unit>? = null
     private var blackTunPermissionInProgress = false
     private var blackTunAutoSelect = true
     private var blackTunLastSourceKey: String? = null
+    private var blackTunLastPingToken = 0
 
     private val requestVpnPermission = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
         val continuation = blackTunPermissionContinuation
         val wasBlackTunRequest = blackTunPermissionInProgress
         blackTunPermissionContinuation = null
         blackTunPermissionInProgress = false
+        hideSoftKeyboard()
         if (it.resultCode == RESULT_OK) {
             if (continuation != null) {
                 continuation.resume(Unit)
@@ -198,6 +210,11 @@ class MainActivity : HelperBaseActivity(), NavigationView.OnNavigationItemSelect
 
     private fun setupViewModel() {
         mainViewModel.updateTestResultAction.observe(this) { setTestState(it) }
+        mainViewModel.updateListAction.observe(this) {
+            if (blackTunServerAdapter != null && currentBlackTunSource()?.subId == mainViewModel.subscriptionId) {
+                refreshBlackTunServerDialogItems()
+            }
+        }
         mainViewModel.isRunning.observe(this) { isRunning ->
             applyRunningState(false, isRunning)
         }
@@ -221,6 +238,7 @@ class MainActivity : HelperBaseActivity(), NavigationView.OnNavigationItemSelect
             .setView(dialogView.root)
             .setCancelable(true)
             .create()
+        dialog.setOnDismissListener { hideSoftKeyboard() }
         dialog.show()
         dialogView.blacktunUsernameInput.postDelayed({
             dialogView.blacktunUsernameInput.requestFocus()
@@ -402,9 +420,10 @@ class MainActivity : HelperBaseActivity(), NavigationView.OnNavigationItemSelect
             mainViewModel.realPingFinishedAction = null
             return
         }
+        val token = ++blackTunLastPingToken
         var finished = false
         mainViewModel.realPingFinishedAction = { status ->
-            if (status == "0") {
+            if (status == "0" && token == blackTunLastPingToken) {
                 finished = true
             }
         }
@@ -415,13 +434,66 @@ class MainActivity : HelperBaseActivity(), NavigationView.OnNavigationItemSelect
                 delay(250)
             }
         } finally {
-            mainViewModel.realPingFinishedAction = null
+            if (token == blackTunLastPingToken) {
+                mainViewModel.realPingFinishedAction = null
+            }
+        }
+        if (token != blackTunLastPingToken) {
+            return
         }
         mainViewModel.sortByTestResults()
         withContext(Dispatchers.Main) {
             mainViewModel.reloadServerList()
             refreshGroupTabTitles()
         }
+    }
+
+    private suspend fun pingBlackTunInBackground(subId: String, token: Int) {
+        mainViewModel.subscriptionIdChanged(subId)
+        mainViewModel.reloadServerList()
+        if (mainViewModel.serversCache.isEmpty()) {
+            if (token == blackTunLastPingToken) {
+                mainViewModel.realPingFinishedAction = null
+            }
+            return
+        }
+        var finished = false
+        mainViewModel.realPingFinishedAction = { status ->
+            if (status == "0" && token == blackTunLastPingToken) {
+                finished = true
+            }
+        }
+        try {
+            mainViewModel.testAllRealPing()
+            val deadline = System.currentTimeMillis() + BLACKTUN_PING_TIMEOUT_MS
+            while (!finished && System.currentTimeMillis() < deadline) {
+                delay(250)
+            }
+        } finally {
+            if (token == blackTunLastPingToken) {
+                mainViewModel.realPingFinishedAction = null
+            }
+        }
+        if (token != blackTunLastPingToken) {
+            return
+        }
+        withContext(Dispatchers.Main) {
+            mainViewModel.sortByTestResults()
+            mainViewModel.reloadServerList()
+            refreshGroupTabTitles()
+            refreshBlackTunServerDialogItems()
+        }
+    }
+
+    private fun refreshBlackTunServerDialogItems() {
+        val source = currentBlackTunSource() ?: return
+        val adapter = blackTunServerAdapter ?: return
+        val items = getBlackTunServerItems(source.subId)
+        if (items.isEmpty()) {
+            return
+        }
+        adapter.updateItems(items.toMutableList())
+        refreshBlackTunAutoSelectRow()
     }
 
     private suspend fun fetchBlackTunText(url: String): String = withContext(Dispatchers.IO) {
@@ -462,12 +534,13 @@ class MainActivity : HelperBaseActivity(), NavigationView.OnNavigationItemSelect
     }
 
     private fun handleBlackTunConnectClick() {
+        hideSoftKeyboard()
         val source = currentBlackTunSource()
         if (source == null) {
             showBlackTunMessage(false, getString(R.string.blacktun_please_login_first))
             return
         }
-        if (mainViewModel.isRunning.value == true) {
+        if (mainViewModel.isRunning.value == true || CoreServiceManager.isRunning()) {
             CoreServiceManager.stopVService(this)
             return
         }
@@ -498,23 +571,33 @@ class MainActivity : HelperBaseActivity(), NavigationView.OnNavigationItemSelect
                 LogUtil.e(AppConfig.TAG, "BlackTun connect failed", e)
                 showBlackTunMessage(false, getString(R.string.blacktun_fetch_failed))
             } finally {
-                if (mainViewModel.isRunning.value != true && !CoreServiceManager.isRunning()) {
+                if (blackTunConnectJob?.isActive == false) {
+                    blackTunConnectJob = null
+                }
+                val active = mainViewModel.isRunning.value == true || CoreServiceManager.isRunning()
+                if (active) {
+                    blackTunBinding.blacktunProgress.visibility = View.GONE
+                    blackTunBinding.blacktunStatus.text = getString(R.string.blacktun_connected)
+                } else {
                     hideBlackTunLoading()
                 }
-                blackTunBinding.blacktunConnectButton.isEnabled = true
+                applyRunningState(false, active)
             }
         }
     }
 
-    private suspend fun startBlackTunV2RayWithPermission(guid: String) {
+    private suspend fun startBlackTunV2RayWithPermission(guid: String?) {
         if (CoreServiceManager.isRunning() || mainViewModel.isRunning.value == true) {
             CoreServiceManager.stopVService(this)
             delay(500)
         }
+        if (guid != null) {
+            MmkvManager.setSelectServer(guid)
+        }
         if (SettingsManager.isVpnMode()) {
             val intent = VpnService.prepare(this)
             if (intent == null) {
-                CoreServiceManager.startVService(this, guid)
+                CoreServiceManager.startVService(this)
             } else {
                 suspendCancellableCoroutine { continuation ->
                     blackTunPermissionContinuation = continuation
@@ -527,14 +610,15 @@ class MainActivity : HelperBaseActivity(), NavigationView.OnNavigationItemSelect
                     }
                     requestVpnPermission.launch(intent)
                 }
-                CoreServiceManager.startVService(this, guid)
+                CoreServiceManager.startVService(this)
             }
         } else {
-            CoreServiceManager.startVService(this, guid)
+            CoreServiceManager.startVService(this)
         }
     }
 
     private fun showBlackTunServerSelector() {
+        hideSoftKeyboard()
         val source = currentBlackTunSource()
         if (source == null) {
             showBlackTunMessage(false, getString(R.string.blacktun_please_login_first))
@@ -543,17 +627,22 @@ class MainActivity : HelperBaseActivity(), NavigationView.OnNavigationItemSelect
         if (blackTunSelectorJob?.isActive == true) {
             return
         }
+        if (blackTunConnectJob?.isActive == true) {
+            return
+        }
         blackTunSelectorJob = lifecycleScope.launch {
             blackTunBinding.blacktunAutoSelectButton.isEnabled = false
-            blackTunBinding.blacktunAutoSelectButton.text = "در حال گرفتن پینگ..."
             try {
-                pingAndSortBlackTun(source.subId)
+                mainViewModel.subscriptionIdChanged(source.subId)
+                mainViewModel.reloadServerList()
                 val items = getBlackTunServerItems(source.subId)
                 if (items.isEmpty()) {
                     showBlackTunMessage(false, getString(R.string.blacktun_no_best_config))
                     return@launch
                 }
                 showBlackTunServerListDialog(items)
+                val token = ++blackTunLastPingToken
+                pingBlackTunInBackground(source.subId, token)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -596,74 +685,373 @@ class MainActivity : HelperBaseActivity(), NavigationView.OnNavigationItemSelect
     }
 
     private fun showBlackTunServerListDialog(items: List<BlackTunServerItem>) {
+        blackTunServerDialog?.dismiss()
+        val root = MaterialCardView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+            radius = dp(28).toFloat()
+            setCardBackgroundColor(ContextCompat.getColor(this@MainActivity, R.color.blacktun_card))
+            strokeColor = ContextCompat.getColor(this@MainActivity, R.color.blacktun_card_stroke)
+            strokeWidth = dp(1).toFloat()
+            useCompatPadding = false
+        }
         val container = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(16, 16, 16, 16)
+            setPadding(0, 0, 0, 0)
         }
-        val scroll = ScrollView(this)
-        scroll.addView(container, LinearLayout.LayoutParams(
+        root.addView(container, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT,
             LinearLayout.LayoutParams.WRAP_CONTENT
         ))
-        val selectedGuid = MmkvManager.decodeSettingsString(PREF_BLACKTUN_SELECTED_GUID, "").orEmpty()
-        container.addView(createBlackTunAutoRow(items.first(), blackTunAutoSelect) {
+
+        container.addView(createBlackTunDialogHeader(items.size))
+        val autoRow = createBlackTunAutoSelectRow(items.firstOrNull(), blackTunAutoSelect) {
             blackTunAutoSelect = true
             MmkvManager.encodeSettings(PREF_BLACKTUN_SELECTED_GUID, "")
             updateBlackTunAutoSelectButton()
+            refreshBlackTunAutoSelectRow()
+            blackTunServerAdapter?.notifyDataSetChanged()
             showBlackTunMessage(true, "انتخاب خودکار فعال شد")
-        })
-        items.forEachIndexed { index, item ->
-            val row = createBlackTunServerRow(item, index == 0, item.guid == selectedGuid && !blackTunAutoSelect) {
-                blackTunAutoSelect = false
-                MmkvManager.encodeSettings(PREF_BLACKTUN_SELECTED_GUID, item.guid)
-                updateBlackTunAutoSelectButton()
-                showBlackTunMessage(true, "کانفیگ انتخاب شد: ${item.name}")
-            }
-            container.addView(row)
         }
-        AlertDialog.Builder(this, R.style.BlackTunDialogTheme)
-            .setTitle("لیست کانفیگ‌ها")
-            .setView(scroll)
+        blackTunAutoSelectRow = autoRow
+        container.addView(autoRow)
+
+        val recyclerView = RecyclerView(this).apply {
+            layoutManager = LinearLayoutManager(this@MainActivity, RecyclerView.VERTICAL, false)
+            setHasFixedSize(true)
+            clipToPadding = false
+            setPadding(dp(18), dp(12), dp(18), dp(6))
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                minOf(dp(420), (resources.displayMetrics.heightPixels * 0.65).toInt())
+            )
+            addItemDecoration(BlackTunSpaceItemDecoration(dp(10)))
+        }
+        blackTunServerAdapter = BlackTunServerAdapter(items.toMutableList()) { item ->
+            blackTunAutoSelect = false
+            MmkvManager.encodeSettings(PREF_BLACKTUN_SELECTED_GUID, item.guid)
+            updateBlackTunAutoSelectButton()
+            blackTunServerAdapter?.notifyDataSetChanged()
+            refreshBlackTunAutoSelectRow()
+            showBlackTunMessage(true, "کانفیگ انتخاب شد: ${item.name}")
+        }
+        recyclerView.adapter = blackTunServerAdapter
+        container.addView(recyclerView)
+
+        blackTunServerDialog = AlertDialog.Builder(this, R.style.BlackTunDialogTheme)
+            .setView(root)
             .setPositiveButton("بستن") { dialog, _ -> dialog.dismiss() }
+            .setOnDismissListener {
+                blackTunServerDialog = null
+                blackTunServerAdapter = null
+                blackTunAutoSelectRow = null
+            }
             .show()
     }
 
-    private fun createBlackTunAutoRow(
-        bestItem: BlackTunServerItem,
+    private fun createBlackTunDialogHeader(count: Int): MaterialCardView {
+        val card = MaterialCardView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                setMargins(dp(18), dp(18), dp(18), dp(12))
+            }
+            radius = dp(22).toFloat()
+            setCardBackgroundColor(ContextCompat.getColor(this@MainActivity, R.color.blacktun_surface))
+            strokeColor = ContextCompat.getColor(this@MainActivity, R.color.blacktun_card_stroke)
+            strokeWidth = dp(1).toFloat()
+            useCompatPadding = false
+        }
+        val layout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(18), dp(16), dp(18), dp(16))
+        }
+        card.addView(layout)
+        layout.addView(TextView(this).apply {
+            text = "لیست کانفیگ‌ها"
+            setTextColor(ContextCompat.getColor(this@MainActivity, R.color.colorWhite))
+            textSize = 18f
+            setTypeface(Typeface.DEFAULT, Typeface.BOLD)
+            gravity = Gravity.START or Gravity.CENTER_VERTICAL
+        })
+        layout.addView(TextView(this).apply {
+            text = "${count} کانفیگ، مرتب‌شده بر اساس پینگ واقعی"
+            setTextColor(ContextCompat.getColor(this@MainActivity, R.color.blacktun_text_muted))
+            textSize = 13f
+            gravity = Gravity.START or Gravity.CENTER_VERTICAL
+            setPadding(0, dp(6), 0, 0)
+        })
+        return card
+    }
+
+    private fun createBlackTunAutoSelectRow(
+        bestItem: BlackTunServerItem?,
         isSelected: Boolean,
         onClick: () -> Unit
-    ): TextView {
-        val pingText = if (bestItem.pingMillis > 0L) "${bestItem.pingMillis}ms" else "پینگ نامشخص"
-        return TextView(this).apply {
-            text = "انتخاب خودکار 🚀\n${bestItem.name} • $pingText"
-            setTextColor(ContextCompat.getColor(this@MainActivity, R.color.colorWhite))
-            textSize = 15f
-            setTypeface(Typeface.DEFAULT, if (isSelected) Typeface.BOLD else Typeface.NORMAL)
-            gravity = Gravity.START or Gravity.CENTER_VERTICAL
-            setPadding(28, 28, 28, 28)
-            background = if (isSelected) ContextCompat.getDrawable(this@MainActivity, R.drawable.bg_blacktun_chip) else null
+    ): MaterialCardView {
+        val card = MaterialCardView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                setMargins(dp(18), 0, dp(18), dp(12))
+            }
+            radius = dp(22).toFloat()
+            setCardBackgroundColor(ContextCompat.getColor(this@MainActivity, R.color.blacktun_card))
+            strokeColor = ContextCompat.getColor(this@MainActivity, R.color.blacktun_blue)
+            strokeWidth = dp(1).toFloat()
+            isClickable = true
+            isFocusable = true
+            useCompatPadding = false
             setOnClickListener { onClick() }
         }
+        val layout = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(18), dp(16), dp(18), dp(16))
+        }
+        card.addView(layout)
+        layout.addView(TextView(this).apply {
+            text = "AUTO"
+            setTextColor(ContextCompat.getColor(this@MainActivity, R.color.blacktun_green))
+            textSize = 11f
+            setTypeface(Typeface.DEFAULT, Typeface.BOLD)
+            gravity = Gravity.CENTER
+            setPadding(0, 0, dp(12), 0)
+        })
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        layout.addView(content)
+        content.addView(TextView(this).apply {
+            text = "انتخاب خودکار"
+            setTextColor(ContextCompat.getColor(this@MainActivity, R.color.colorWhite))
+            textSize = 15f
+            setTypeface(Typeface.DEFAULT, Typeface.BOLD)
+            gravity = Gravity.START or Gravity.CENTER_VERTICAL
+        })
+        content.addView(TextView(this).apply {
+            text = bestItem?.let { "پیشنهاد: ${it.name} • ${formatBlackTunPing(it.pingMillis)}" }
+                ?: "در حال دریافت کانفیگ‌ها..."
+            setTextColor(ContextCompat.getColor(this@MainActivity, R.color.blacktun_text_muted))
+            textSize = 12f
+            gravity = Gravity.START or Gravity.CENTER_VERTICAL
+            setPadding(0, dp(5), 0, 0)
+        })
+        layout.addView(TextView(this).apply {
+            text = bestItem?.let { formatBlackTunPing(it.pingMillis) } ?: "..."
+            setTextColor(ContextCompat.getColor(this@MainActivity, R.color.blacktun_green))
+            textSize = 13f
+            setTypeface(Typeface.DEFAULT, Typeface.BOLD)
+            gravity = Gravity.END or Gravity.CENTER_VERTICAL
+            setPadding(dp(12), 0, 0, 0)
+        })
+        updateBlackTunAutoSelectRow(card, bestItem, isSelected)
+        return card
+    }
+
+    private fun refreshBlackTunAutoSelectRow() {
+        val row = blackTunAutoSelectRow ?: return
+        val source = currentBlackTunSource() ?: return
+        val best = getBlackTunServerItems(source.subId).firstOrNull()
+        updateBlackTunAutoSelectRow(row, best, blackTunAutoSelect)
+    }
+
+    private fun updateBlackTunAutoSelectRow(
+        card: MaterialCardView,
+        bestItem: BlackTunServerItem?,
+        isSelected: Boolean
+    ) {
+        val layout = card.getChildAt(0) as LinearLayout
+        val content = layout.getChildAt(1) as LinearLayout
+        val title = content.getChildAt(0) as TextView
+        val subtitle = content.getChildAt(1) as TextView
+        val ping = layout.getChildAt(2) as TextView
+        title.text = "انتخاب خودکار"
+        subtitle.text = bestItem?.let { "پیشنهاد: ${it.name} • ${formatBlackTunPing(it.pingMillis)}" }
+            ?: "در حال دریافت کانفیگ‌ها..."
+        ping.text = bestItem?.let { formatBlackTunPing(it.pingMillis) } ?: "..."
+        card.strokeColor = ContextCompat.getColor(this@MainActivity, if (isSelected) R.color.blacktun_green else R.color.blacktun_blue)
+        card.setCardBackgroundColor(ContextCompat.getColor(
+            this@MainActivity,
+            if (isSelected) R.color.blacktun_card else R.color.blacktun_surface
+        ))
     }
 
     private fun createBlackTunServerRow(
         item: BlackTunServerItem,
+        index: Int,
         isBest: Boolean,
-        isSelected: Boolean,
-        onClick: () -> Unit
-    ): TextView {
-        val pingText = if (item.pingMillis > 0L) "${item.pingMillis}ms" else "پینگ نامشخص"
-        val title = if (isBest) "🚀 ${item.name}" else item.name
-        return TextView(this).apply {
-            text = "$title\n$pingText"
+        isSelected: Boolean
+    ): MaterialCardView {
+        val card = MaterialCardView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+            radius = dp(22).toFloat()
+            setCardBackgroundColor(ContextCompat.getColor(this@MainActivity, R.color.blacktun_card))
+            strokeColor = ContextCompat.getColor(this@MainActivity, R.color.blacktun_card_stroke)
+            strokeWidth = dp(1).toFloat()
+            isClickable = true
+            isFocusable = true
+            useCompatPadding = false
+        }
+        val layout = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(16), dp(15), dp(16), dp(15))
+        }
+        card.addView(layout)
+        layout.addView(TextView(this).apply {
+            text = String.format("%02d", index + 1)
+            setTextColor(ContextCompat.getColor(this@MainActivity, if (isBest) R.color.blacktun_green else R.color.blacktun_text_muted))
+            textSize = 12f
+            setTypeface(Typeface.DEFAULT, Typeface.BOLD)
+            gravity = Gravity.CENTER
+            setPadding(0, 0, dp(12), 0)
+        })
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        layout.addView(content)
+        content.addView(TextView(this).apply {
+            text = item.name
             setTextColor(ContextCompat.getColor(this@MainActivity, R.color.colorWhite))
-            textSize = 15f
+            textSize = 14f
             setTypeface(Typeface.DEFAULT, if (isSelected) Typeface.BOLD else Typeface.NORMAL)
             gravity = Gravity.START or Gravity.CENTER_VERTICAL
-            setPadding(28, 28, 28, 28)
-            background = if (isSelected) ContextCompat.getDrawable(this@MainActivity, R.drawable.bg_blacktun_chip) else null
-            setOnClickListener { onClick() }
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+        })
+        content.addView(TextView(this).apply {
+            text = if (isBest) "بهترین کانفیگ" else "کانفیگ آماده اتصال"
+            setTextColor(ContextCompat.getColor(this@MainActivity, R.color.blacktun_text_muted))
+            textSize = 12f
+            gravity = Gravity.START or Gravity.CENTER_VERTICAL
+            setPadding(0, dp(4), 0, 0)
+        })
+        layout.addView(TextView(this).apply {
+            text = formatBlackTunPing(item.pingMillis)
+            setTextColor(ContextCompat.getColor(this@MainActivity, blackTunPingColor(item.pingMillis)))
+            textSize = 13f
+            setTypeface(Typeface.DEFAULT, Typeface.BOLD)
+            gravity = Gravity.END or Gravity.CENTER_VERTICAL
+            setPadding(dp(12), 0, 0, 0)
+        })
+        updateBlackTunServerRow(card, item, isBest, isSelected)
+        return card
+    }
+
+    private fun updateBlackTunServerRow(
+        card: MaterialCardView,
+        item: BlackTunServerItem,
+        isBest: Boolean,
+        isSelected: Boolean
+    ) {
+        val layout = card.getChildAt(0) as LinearLayout
+        val rank = layout.getChildAt(0) as TextView
+        val content = layout.getChildAt(1) as LinearLayout
+        val title = content.getChildAt(0) as TextView
+        val subtitle = content.getChildAt(1) as TextView
+        val ping = layout.getChildAt(2) as TextView
+        rank.text = String.format("%02d", getBlackTunServerItems(currentBlackTunSource()?.subId.orEmpty()).indexOfFirst { it.guid == item.guid }.takeIf { it >= 0 } ?: 0)
+        rank.setTextColor(ContextCompat.getColor(this@MainActivity, if (isBest) R.color.blacktun_green else R.color.blacktun_text_muted))
+        title.text = item.name
+        title.setTypeface(Typeface.DEFAULT, if (isSelected) Typeface.BOLD else Typeface.NORMAL)
+        subtitle.text = if (isBest) "بهترین کانفیگ" else "کانفیگ آماده اتصال"
+        ping.text = formatBlackTunPing(item.pingMillis)
+        ping.setTextColor(ContextCompat.getColor(this@MainActivity, blackTunPingColor(item.pingMillis)))
+        card.strokeColor = ContextCompat.getColor(
+            this@MainActivity,
+            when {
+                isSelected -> R.color.blacktun_green
+                isBest -> R.color.blacktun_blue
+                else -> R.color.blacktun_card_stroke
+            }
+        )
+        card.setCardBackgroundColor(ContextCompat.getColor(
+            this@MainActivity,
+            if (isSelected) R.color.blacktun_card else R.color.blacktun_surface
+        ))
+    }
+
+    private inner class BlackTunServerAdapter(
+        private val items: MutableList<BlackTunServerItem>,
+        private val onSelect: (BlackTunServerItem) -> Unit
+    ) : RecyclerView.Adapter<BlackTunServerAdapter.ViewHolder>() {
+        inner class ViewHolder(val card: MaterialCardView) : RecyclerView.ViewHolder(card)
+
+        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ViewHolder {
+            val card = createBlackTunServerRow(
+                BlackTunServerItem("", "کانفیگ", -1L),
+                0,
+                false,
+                false
+            )
+            return ViewHolder(card)
         }
+
+        override fun onBindViewHolder(holder: ViewHolder, position: Int) {
+            val item = items[position]
+            val selectedGuid = MmkvManager.decodeSettingsString(PREF_BLACKTUN_SELECTED_GUID, "").orEmpty()
+            updateBlackTunServerRow(
+                holder.card,
+                item,
+                position == 0,
+                item.guid == selectedGuid && !blackTunAutoSelect
+            )
+            holder.card.setOnClickListener { onSelect(item) }
+        }
+
+        override fun getItemCount(): Int = items.size
+
+        fun updateItems(newItems: MutableList<BlackTunServerItem>) {
+            items.clear()
+            items.addAll(newItems)
+            notifyDataSetChanged()
+        }
+    }
+
+    private inner class BlackTunSpaceItemDecoration(private val space: Int) : RecyclerView.ItemDecoration() {
+        override fun getItemOffsets(
+            outRect: android.graphics.Rect,
+            view: View,
+            parent: RecyclerView,
+            state: RecyclerView.State
+        ) {
+            outRect.bottom = space
+        }
+    }
+
+    private fun formatBlackTunPing(pingMillis: Long): String {
+        return if (pingMillis > 0L) "${pingMillis}ms" else "در حال پینگ..."
+    }
+
+    private fun blackTunPingColor(pingMillis: Long): Int {
+        return when {
+            pingMillis <= 0L -> R.color.blacktun_text_muted
+            pingMillis <= 300L -> R.color.blacktun_green
+            pingMillis <= 800L -> R.color.colorConfigType
+            else -> R.color.blacktun_error
+        }
+    }
+
+    private fun dp(value: Int): Int {
+        return (value * resources.displayMetrics.density).toInt()
+    }
+
+    private fun hideSoftKeyboard() {
+        val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+        currentFocus?.let { imm.hideSoftInputFromWindow(it.windowToken, 0) }
+        window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN)
     }
 
     private fun updateBlackTunAutoSelectButton() {
@@ -723,15 +1111,23 @@ class MainActivity : HelperBaseActivity(), NavigationView.OnNavigationItemSelect
 
     private fun hideBlackTunLoading() {
         blackTunBinding.blacktunProgress.visibility = View.GONE
-        blackTunBinding.blacktunStatus.text = getString(R.string.blacktun_ready)
+        if (mainViewModel.isRunning.value != true && !CoreServiceManager.isRunning()) {
+            blackTunBinding.blacktunStatus.text = getString(R.string.blacktun_ready)
+        }
     }
 
     private fun showBlackTunMessage(success: Boolean, text: String) {
+        blackTunMessageJob?.cancel()
         blackTunBinding.blacktunMessage.visibility = View.VISIBLE
         blackTunBinding.blacktunMessageCard.visibility = View.VISIBLE
         blackTunBinding.blacktunMessage.text = text
         blackTunBinding.blacktunMessage.setTextColor(ContextCompat.getColor(this, if (success) R.color.blacktun_success else R.color.blacktun_error))
         blackTunBinding.blacktunMessageCard.strokeColor = ContextCompat.getColor(this, if (success) R.color.blacktun_success else R.color.blacktun_error)
+        blackTunMessageJob = lifecycleScope.launch {
+            delay(BLACKTUN_MESSAGE_AUTO_HIDE_MS)
+            blackTunBinding.blacktunMessageCard.visibility = View.GONE
+            blackTunBinding.blacktunMessage.visibility = View.GONE
+        }
     }
 
     private fun setupGroupTab() {
@@ -788,10 +1184,28 @@ class MainActivity : HelperBaseActivity(), NavigationView.OnNavigationItemSelect
             if (intent == null) {
                 startV2Ray()
             } else {
-                requestVpnPermission.launch(intent)
+                lifecycleScope.launch {
+                    try {
+                        startBlackTunV2RayWithPermission(null)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        LogUtil.e(AppConfig.TAG, "FAB connect failed", e)
+                        toastError(e.message ?: getString(R.string.blacktun_fetch_failed))
+                    }
+                }
             }
         } else {
-            startV2Ray()
+            lifecycleScope.launch {
+                try {
+                    startBlackTunV2RayWithPermission(null)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    LogUtil.e(AppConfig.TAG, "FAB connect failed", e)
+                    toastError(e.message ?: getString(R.string.blacktun_fetch_failed))
+                }
+            }
         }
     }
 
@@ -841,6 +1255,7 @@ class MainActivity : HelperBaseActivity(), NavigationView.OnNavigationItemSelect
             setTestState(getString(R.string.connection_connected))
             binding.layoutTest.isFocusable = true
 
+            blackTunBinding.blacktunProgress.visibility = View.GONE
             blackTunBinding.blacktunStatus.text = getString(R.string.blacktun_connected)
             blackTunBinding.blacktunConnectButton.text = getString(R.string.blacktun_connected)
             blackTunBinding.blacktunConnectButton.backgroundTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.blacktun_green))
@@ -853,6 +1268,7 @@ class MainActivity : HelperBaseActivity(), NavigationView.OnNavigationItemSelect
             setTestState(getString(R.string.connection_not_connected))
             binding.layoutTest.isFocusable = false
 
+            blackTunBinding.blacktunProgress.visibility = View.GONE
             blackTunBinding.blacktunStatus.text = getString(R.string.blacktun_ready)
             blackTunBinding.blacktunConnectButton.text = getString(R.string.blacktun_connect)
             blackTunBinding.blacktunConnectButton.backgroundTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.blacktun_blue))
@@ -1322,6 +1738,10 @@ class MainActivity : HelperBaseActivity(), NavigationView.OnNavigationItemSelect
     override fun onDestroy() {
         blackTunConnectJob?.cancel()
         blackTunSelectorJob?.cancel()
+        blackTunMessageJob?.cancel()
+        blackTunServerDialog?.dismiss()
+        blackTunServerAdapter = null
+        blackTunAutoSelectRow = null
         blackTunPermissionContinuation?.cancel()
         blackTunPermissionContinuation = null
         blackTunPermissionInProgress = false
