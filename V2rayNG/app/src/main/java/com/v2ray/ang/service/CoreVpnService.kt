@@ -330,18 +330,23 @@ class CoreVpnService : VpnService(), ServiceControl {
      * Starts the tun2socks process with the appropriate parameters.
      */
     private fun runTun2socks() {
-        if (SettingsManager.isUsingHevTun()) {
-            tun2SocksService = TProxyService(
-                context = applicationContext,
-                vpnInterface = mInterface,
-                isRunningProvider = { isRunning },
-                restartCallback = { runTun2socks() }
-            )
-        } else {
-            tun2SocksService = null
-        }
+        try {
+            if (SettingsManager.isUsingHevTun() && NativeTunnelManager.ensureLoaded()) {
+                tun2SocksService = TProxyService(
+                    context = applicationContext,
+                    vpnInterface = mInterface,
+                    isRunningProvider = { isRunning },
+                    restartCallback = { runTun2socks() }
+                )
+            } else {
+                tun2SocksService = null
+            }
 
-        tun2SocksService?.startTun2Socks()
+            tun2SocksService?.startTun2Socks()
+        } catch (t: Throwable) {
+            tun2SocksService = null
+            LogUtil.e(AppConfig.TAG, "StartCore-VPN: Failed to start tun2socks", t)
+        }
     }
 
     private fun stopAllService(isForced: Boolean = true) {

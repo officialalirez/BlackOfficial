@@ -15,6 +15,7 @@ import com.blacktun.hm.enums.EConfigType
 import com.blacktun.hm.extension.isNotNullEmpty
 import com.blacktun.hm.handler.MmkvManager
 import com.blacktun.hm.handler.SettingsManager
+import com.blacktun.hm.service.NativeTunnelManager
 import com.blacktun.hm.util.HttpUtil
 import com.blacktun.hm.util.JsonUtil
 import com.blacktun.hm.util.LogUtil
@@ -481,7 +482,11 @@ object CoreConfigManager {
     //region some sub function
 
     private fun needTun(): Boolean {
-        return SettingsManager.isVpnMode() && !SettingsManager.isUsingHevTun()
+        return SettingsManager.isVpnMode() && !isHevTunnelActive()
+    }
+
+    private fun isHevTunnelActive(): Boolean {
+        return SettingsManager.isUsingHevTun() && NativeTunnelManager.ensureLoaded()
     }
 
     /**
@@ -489,7 +494,7 @@ object CoreConfigManager {
      */
     private fun configureInbounds(v2rayConfig: V2rayConfig) {
         val vpn = SettingsManager.isVpnMode()
-        val useHev = SettingsManager.isUsingHevTun()
+        val useHev = isHevTunnelActive()
         val forcedByHev = vpn && useHev
 
         val enableLocalProxy = forcedByHev || MmkvManager.decodeSettingsBool(AppConfig.PREF_ENABLE_LOCAL_PROXY, true)
@@ -627,7 +632,7 @@ object CoreConfigManager {
         }
 
         if (SettingsManager.isVpnMode()) {
-            if (SettingsManager.isUsingHevTun()) {
+            if (isHevTunnelActive()) {
                 //hev-socks5-tunnel dns routing
                 v2rayConfig.routing.rules.add(
                     0, V2rayConfig.RoutingBean.RulesBean(

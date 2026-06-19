@@ -28,6 +28,7 @@ import com.blacktun.hm.service.CoreVpnService
 import com.blacktun.hm.service.DialerNativeService
 import com.blacktun.hm.service.DialerWebviewService
 import com.blacktun.hm.service.IDialerService
+import com.blacktun.hm.service.NativeTunnelManager
 import com.blacktun.hm.util.LogUtil
 import com.blacktun.hm.util.MessageUtil
 import com.blacktun.hm.util.Utils
@@ -260,7 +261,7 @@ object CoreServiceManager {
         } else {
             "127.0.0.1:${Utils.findRandomFreePort()}"
         }
-        if (SettingsManager.isUsingHevTun()) {
+        if (SettingsManager.isUsingHevTun() && NativeTunnelManager.ensureLoaded()) {
             tunFd = 0
         }
 
