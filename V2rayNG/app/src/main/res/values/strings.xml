@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name" translatable="false">BlackTun</string>
+    <string name="blacktun_app_title" translatable="false">تونل‌سیاه - BlackTun</string>
     <string name="app_widget_name">Switch</string>
     <string name="app_tile_name">Switch</string>
     <string name="app_tile_first_use">First use of this feature, please use the app to add server</string>
@@ -8,7 +9,7 @@
     <string name="navigation_drawer_close">Close navigation drawer</string>
     <string name="blacktun_connect">Connect</string>
     <string name="blacktun_connected">Connected</string>
-    <string name="blacktun_ready">برای اتصال، بهترین کانفیگ با کمترین پینگ انتخاب می‌شود</string>
+    <string name="blacktun_ready">برای اتصال، بهترین کانفیگ بصورت خودکار انتخاب می‌شود</string>
     <string name="blacktun_not_logged_in">هنوز وارد نشده‌اید</string>
     <string name="blacktun_username_title">ورود به اشتراک</string>
     <string name="blacktun_username_subtitle">نام کاربری اشتراک را وارد کنید تا BlackTun کانفیگ مناسب را پیدا کند</string>

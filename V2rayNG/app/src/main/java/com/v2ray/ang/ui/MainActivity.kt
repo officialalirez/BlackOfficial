@@ -46,11 +46,15 @@ import com.blacktun.hm.util.HttpUtil
 import com.blacktun.hm.util.LogUtil
 import com.blacktun.hm.util.Utils
 import com.blacktun.hm.viewmodel.MainViewModel
+import kotlinx.coroutines.CancellableContinuation
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import kotlin.coroutines.resume
 
 private const val BLACKTUN_SUBSCRIPTION_ID = "blacktun_subscription"
 private const val BLACKTUN_FREE_ID = "blacktun_free"
@@ -89,12 +93,27 @@ class MainActivity : HelperBaseActivity(), NavigationView.OnNavigationItemSelect
     private lateinit var groupPagerAdapter: GroupPagerAdapter
     private var tabMediator: TabLayoutMediator? = null
     private var blackTunConnectJob: Job? = null
+    private var blackTunPermissionContinuation: CancellableContinuation<Unit>? = null
+    private var blackTunPermissionInProgress = false
 
     private val requestVpnPermission = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+        val continuation = blackTunPermissionContinuation
+        val wasBlackTunRequest = blackTunPermissionInProgress
+        blackTunPermissionContinuation = null
+        blackTunPermissionInProgress = false
         if (it.resultCode == RESULT_OK) {
-            startV2Ray()
+            if (continuation != null) {
+                continuation.resume(Unit)
+            } else if (wasBlackTunRequest) {
+                startV2Ray()
+            }
         } else {
-            showBlackTunMessage(false, getString(R.string.blacktun_vpn_permission_denied))
+            if (continuation != null && wasBlackTunRequest) {
+                showBlackTunMessage(false, getString(R.string.blacktun_vpn_permission_denied))
+                continuation.cancel()
+            } else if (continuation == null && !wasBlackTunRequest) {
+                showBlackTunMessage(false, getString(R.string.blacktun_vpn_permission_denied))
+            }
         }
     }
     private val requestActivityLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
@@ -447,23 +466,46 @@ class MainActivity : HelperBaseActivity(), NavigationView.OnNavigationItemSelect
                 mainViewModel.reloadServerList()
                 refreshGroupTabTitles()
                 showBlackTunMessage(true, getString(R.string.blacktun_selecting_best))
-                if (SettingsManager.isVpnMode()) {
-                    val intent = VpnService.prepare(this@MainActivity)
-                    if (intent == null) {
-                        startV2Ray()
-                    } else {
-                        requestVpnPermission.launch(intent)
-                    }
-                } else {
-                    startV2Ray()
-                }
+                startBlackTunV2RayWithPermission(bestGuid)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 LogUtil.e(AppConfig.TAG, "BlackTun connect failed", e)
                 showBlackTunMessage(false, getString(R.string.blacktun_fetch_failed))
             } finally {
+                if (mainViewModel.isRunning.value != true && !CoreServiceManager.isRunning()) {
+                    hideBlackTunLoading()
+                }
                 blackTunBinding.blacktunConnectButton.isEnabled = true
-                hideBlackTunLoading()
             }
+        }
+    }
+
+    private suspend fun startBlackTunV2RayWithPermission(guid: String) {
+        if (CoreServiceManager.isRunning() || mainViewModel.isRunning.value == true) {
+            CoreServiceManager.stopVService(this)
+            delay(500)
+        }
+        if (SettingsManager.isVpnMode()) {
+            val intent = VpnService.prepare(this)
+            if (intent == null) {
+                CoreServiceManager.startVService(this, guid)
+            } else {
+                suspendCancellableCoroutine { continuation ->
+                    blackTunPermissionContinuation = continuation
+                    blackTunPermissionInProgress = true
+                    continuation.invokeOnCancellation {
+                        if (blackTunPermissionContinuation === continuation) {
+                            blackTunPermissionContinuation = null
+                            blackTunPermissionInProgress = false
+                        }
+                    }
+                    requestVpnPermission.launch(intent)
+                }
+                CoreServiceManager.startVService(this, guid)
+            }
+        } else {
+            CoreServiceManager.startVService(this, guid)
         }
     }
 
@@ -642,13 +684,16 @@ class MainActivity : HelperBaseActivity(), NavigationView.OnNavigationItemSelect
             return
         }
 
-        if (isRunning) {
+        val active = isRunning || CoreServiceManager.isRunning()
+
+        if (active) {
             binding.fab.setImageResource(R.drawable.ic_stop_24dp)
             binding.fab.backgroundTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.color_fab_active))
             binding.fab.contentDescription = getString(R.string.action_stop_service)
             setTestState(getString(R.string.connection_connected))
             binding.layoutTest.isFocusable = true
 
+            blackTunBinding.blacktunStatus.text = getString(R.string.blacktun_connected)
             blackTunBinding.blacktunConnectButton.text = getString(R.string.blacktun_connected)
             blackTunBinding.blacktunConnectButton.backgroundTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.blacktun_green))
             blackTunBinding.blacktunConnectButton.contentDescription = getString(R.string.action_stop_service)
@@ -1127,6 +1172,9 @@ class MainActivity : HelperBaseActivity(), NavigationView.OnNavigationItemSelect
 
     override fun onDestroy() {
         blackTunConnectJob?.cancel()
+        blackTunPermissionContinuation?.cancel()
+        blackTunPermissionContinuation = null
+        blackTunPermissionInProgress = false
         tabMediator?.detach()
         super.onDestroy()
     }
