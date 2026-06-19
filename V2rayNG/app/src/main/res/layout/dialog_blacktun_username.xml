@@ -55,8 +55,7 @@
             app:hintTextColor="@color/blacktun_text_muted"
             app:layout_constraintEnd_toEndOf="parent"
             app:layout_constraintStart_toStartOf="parent"
-            app:layout_constraintTop_toBottomOf="@id/blacktun_username_subtitle"
-            app:placeholderText="Family">
+            app:layout_constraintTop_toBottomOf="@id/blacktun_username_subtitle">
 
             <com.google.android.material.textfield.TextInputEditText
                 android:id="@+id/blacktun_username_input"

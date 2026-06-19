@@ -8,10 +8,9 @@
     <string name="navigation_drawer_close">Close navigation drawer</string>
     <string name="blacktun_connect">Connect</string>
     <string name="blacktun_connected">Connected</string>
-    <string name="blacktun_tagline">Private tunnel with real-time latency selection</string>
     <string name="blacktun_ready">برای اتصال، بهترین کانفیگ با کمترین پینگ انتخاب می‌شود</string>
     <string name="blacktun_not_logged_in">هنوز وارد نشده‌اید</string>
-    <string name="blacktun_username_title">ورود با اشتراک</string>
+    <string name="blacktun_username_title">ورود به اشتراک</string>
     <string name="blacktun_username_subtitle">نام کاربری اشتراک را وارد کنید تا BlackTun کانفیگ مناسب را پیدا کند</string>
     <string name="blacktun_username_hint">نام کاربری</string>
     <string name="blacktun_check_subscription">بررسی و دریافت کانفیگ</string>

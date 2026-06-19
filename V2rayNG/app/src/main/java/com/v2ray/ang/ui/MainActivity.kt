@@ -274,8 +274,6 @@ class MainActivity : HelperBaseActivity(), NavigationView.OnNavigationItemSelect
                 refreshGroupTabTitles()
                 saveBlackTunSource(finalSource)
                 updateBlackTunSourceBadge()
-                showBlackTunLoading(getString(R.string.blacktun_pinging))
-                pingAndSortBlackTun(finalSource.subId)
                 val successMessage = if (finalSource.mode == BlackTunMode.FREE) {
                     getString(R.string.blacktun_loaded_free)
                 } else {
@@ -515,7 +513,7 @@ class MainActivity : HelperBaseActivity(), NavigationView.OnNavigationItemSelect
     }
 
     private fun saveBlackTunSource(source: BlackTunSource) {
-        MmkvManager.encodeSettings(PREF_BLACKTUN_MODE, source.mode.name)
+        MmkvManager.encodeSettings(PREF_BLACKTUN_MODE, source.mode.name.lowercase())
         MmkvManager.encodeSettings(PREF_BLACKTUN_USERNAME, source.username.orEmpty())
     }
 
