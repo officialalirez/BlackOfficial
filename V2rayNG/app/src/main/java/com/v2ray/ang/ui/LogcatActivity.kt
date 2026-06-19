@@ -11,6 +11,7 @@ import androidx.appcompat.widget.SearchView
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
+import com.blacktun.hm.BuildConfig
 import com.blacktun.hm.R
 import com.blacktun.hm.databinding.ActivityLogcatBinding
 import com.blacktun.hm.extension.toast
@@ -69,7 +70,7 @@ class LogcatActivity : BaseActivity(), SwipeRefreshLayout.OnRefreshListener {
 
                 val uri = FileProvider.getUriForFile(
                     this@LogcatActivity,
-                    "${packageName}.cache",
+                    "${BuildConfig.APPLICATION_ID}.cache",
                     logFile
                 )
 

@@ -17,7 +17,6 @@ import android.os.StrictMode
 import androidx.annotation.RequiresApi
 import com.blacktun.hm.AppConfig
 import com.blacktun.hm.AppConfig.LOOPBACK
-import com.blacktun.hm.BuildConfig
 import com.blacktun.hm.contracts.ServiceControl
 import com.blacktun.hm.contracts.Tun2SocksControl
 import com.blacktun.hm.core.CoreServiceManager
@@ -292,7 +291,7 @@ class CoreVpnService : VpnService(), ServiceControl {
      * @param builder The VPN Builder to configure.
      */
     private fun configurePerAppProxy(builder: Builder) {
-        val selfPackageName = BuildConfig.APPLICATION_ID
+        val selfPackageName = packageName
 
         // If per-app proxy is not enabled, disallow the VPN service's own package and return
         if (MmkvManager.decodeSettingsBool(AppConfig.PREF_PER_APP_PROXY) == false) {
