@@ -75,6 +75,30 @@ object CoreConfigManager {
     }
 
     /**
+     * Build a minimal runtime configuration used only when the full runtime config fails.
+     */
+    fun getV2rayConfigMinimal(context: Context, guid: String): ConfigResult {
+        try {
+            val configContext = CoreConfigContextBuilder.build(context, guid)
+                ?: return ConfigResult(status = false, guid = guid, errorMessage = "Failed to build config context")
+            if (configContext.isCustom) {
+                return buildV2rayCustomConfig(configContext)
+            }
+            val v2rayConfig = buildUnifiedConfig(configContext)
+            postProcessForMinimalRuntime(v2rayConfig)
+
+            return toConfigResult(configContext, v2rayConfig)
+        } catch (e: Exception) {
+            LogUtil.e(AppConfig.TAG, "Failed to get minimal V2ray config", e)
+            return ConfigResult(
+                status = false,
+                guid = guid,
+                errorMessage = "Failed to get minimal V2ray config: ${e.message ?: e.javaClass.simpleName}"
+            )
+        }
+    }
+
+    /**
      * Build configuration for custom profiles.
      */
     private fun buildV2rayCustomConfig(configContext: CoreConfigContext): ConfigResult {
@@ -398,6 +422,21 @@ object CoreConfigManager {
         v2rayConfig.fakedns = null
         v2rayConfig.stats = null
         v2rayConfig.policy = null
+        v2rayConfig.outbounds.forEach { key -> key.mux = null }
+    }
+
+    /**
+     * Keep VPN/proxy inbounds and outbounds while removing complex runtime sections that can fail on some cores.
+     */
+    private fun postProcessForMinimalRuntime(v2rayConfig: V2rayConfig) {
+        v2rayConfig.log.loglevel = MmkvManager.decodeSettingsString(AppConfig.PREF_LOGLEVEL) ?: "warning"
+        v2rayConfig.routing.rules.clear()
+        v2rayConfig.dns = null
+        v2rayConfig.fakedns = null
+        v2rayConfig.stats = null
+        v2rayConfig.policy = null
+        v2rayConfig.observatory = null
+        v2rayConfig.burstObservatory = null
         v2rayConfig.outbounds.forEach { key -> key.mux = null }
     }
 

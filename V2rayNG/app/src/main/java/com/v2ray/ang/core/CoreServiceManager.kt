@@ -232,7 +232,16 @@ object CoreServiceManager {
         val config = MmkvManager.decodeServerConfig(guid) ?: error("Failed to decode server config")
 
         LogUtil.i(AppConfig.TAG, "StartCore-Manager: Starting core loop for ${config.remarks}")
-        val result = CoreConfigManager.getV2rayConfig(service, guid)
+        var result = CoreConfigManager.getV2rayConfig(service, guid)
+        if (!result.status) {
+            val minimalResult = CoreConfigManager.getV2rayConfigMinimal(service, guid)
+            if (minimalResult.status) {
+                LogUtil.w(AppConfig.TAG, "StartCore-Manager: Full config failed, using minimal runtime config. Original: ${result.errorMessage}")
+                result = minimalResult
+            } else {
+                error(result.errorMessage.ifBlank { "Failed to get V2Ray config" })
+            }
+        }
         LogUtil.d(AppConfig.TAG, result.content)
         if (!result.status) {
             error(result.errorMessage.ifBlank { "Failed to get V2Ray config" })

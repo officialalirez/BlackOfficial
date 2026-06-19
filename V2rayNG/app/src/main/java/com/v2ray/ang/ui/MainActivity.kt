@@ -2,15 +2,20 @@ package com.blacktun.hm.ui
 
 import android.content.Intent
 import android.content.res.ColorStateList
+import android.graphics.Typeface
 import android.net.Uri
 import android.net.VpnService
 import android.os.Bundle
+import android.view.Gravity
 import android.view.KeyEvent
 import android.view.Menu
 import android.view.MenuItem
 import android.view.View
 import android.view.WindowManager
 import android.view.inputmethod.EditorInfo
+import android.widget.LinearLayout
+import android.widget.ScrollView
+import android.widget.TextView
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
@@ -64,6 +69,7 @@ private const val BLACKTUN_MODE_SUBSCRIPTION = "subscription"
 private const val BLACKTUN_MODE_FREE = "free"
 private const val PREF_BLACKTUN_MODE = "blacktun_mode"
 private const val PREF_BLACKTUN_USERNAME = "blacktun_username"
+private const val PREF_BLACKTUN_SELECTED_GUID = "blacktun_selected_guid"
 private const val BLACKTUN_USER_AGENT = "BlackTun/${BuildConfig.VERSION_NAME}"
 private const val BLACKTUN_PING_TIMEOUT_MS = 45_000L
 
@@ -81,6 +87,12 @@ private data class BlackTunSource(
     val username: String? = null
 )
 
+private data class BlackTunServerItem(
+    val guid: String,
+    val name: String,
+    val pingMillis: Long
+)
+
 class MainActivity : HelperBaseActivity(), NavigationView.OnNavigationItemSelectedListener {
     private val binding by lazy {
         ActivityMainBinding.inflate(layoutInflater)
@@ -93,8 +105,11 @@ class MainActivity : HelperBaseActivity(), NavigationView.OnNavigationItemSelect
     private lateinit var groupPagerAdapter: GroupPagerAdapter
     private var tabMediator: TabLayoutMediator? = null
     private var blackTunConnectJob: Job? = null
+    private var blackTunSelectorJob: Job? = null
     private var blackTunPermissionContinuation: CancellableContinuation<Unit>? = null
     private var blackTunPermissionInProgress = false
+    private var blackTunAutoSelect = true
+    private var blackTunLastSourceKey: String? = null
 
     private val requestVpnPermission = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
         val continuation = blackTunPermissionContinuation
@@ -193,6 +208,7 @@ class MainActivity : HelperBaseActivity(), NavigationView.OnNavigationItemSelect
     private fun setupBlackTunOverlay() {
         blackTunBinding.blacktunOverlay.visibility = View.VISIBLE
         blackTunBinding.blacktunConnectButton.setOnClickListener { handleBlackTunConnectClick() }
+        blackTunBinding.blacktunAutoSelectButton.setOnClickListener { showBlackTunServerSelector() }
         blackTunBinding.blacktunSubscriptionButton.setOnClickListener { showBlackTunUsernameDialog() }
         blackTunBinding.blacktunFreeButton.setOnClickListener { loadFreeConfigs() }
         updateBlackTunSourceBadge()
@@ -292,6 +308,12 @@ class MainActivity : HelperBaseActivity(), NavigationView.OnNavigationItemSelect
                 setupGroupTab()
                 refreshGroupTabTitles()
                 saveBlackTunSource(finalSource)
+                if (blackTunLastSourceKey != finalSource.subId) {
+                    blackTunLastSourceKey = finalSource.subId
+                    blackTunAutoSelect = true
+                    MmkvManager.encodeSettings(PREF_BLACKTUN_SELECTED_GUID, "")
+                    updateBlackTunAutoSelectButton()
+                }
                 updateBlackTunSourceBadge()
                 val successMessage = if (finalSource.mode == BlackTunMode.FREE) {
                     getString(R.string.blacktun_loaded_free)
@@ -452,21 +474,24 @@ class MainActivity : HelperBaseActivity(), NavigationView.OnNavigationItemSelect
         if (blackTunConnectJob?.isActive == true) {
             return
         }
+        if (blackTunSelectorJob?.isActive == true) {
+            return
+        }
         blackTunConnectJob = lifecycleScope.launch {
             blackTunBinding.blacktunConnectButton.isEnabled = false
             showBlackTunLoading(getString(R.string.blacktun_pinging))
             try {
                 pingAndSortBlackTun(source.subId)
-                val bestGuid = findBestBlackTunServer(source.subId)
-                if (bestGuid.isNullOrBlank()) {
+                val connectGuid = getBlackTunConnectGuid(source.subId)
+                if (connectGuid.isNullOrBlank()) {
                     showBlackTunMessage(false, getString(R.string.blacktun_no_best_config))
                     return@launch
                 }
-                MmkvManager.setSelectServer(bestGuid)
+                MmkvManager.setSelectServer(connectGuid)
                 mainViewModel.reloadServerList()
                 refreshGroupTabTitles()
                 showBlackTunMessage(true, getString(R.string.blacktun_selecting_best))
-                startBlackTunV2RayWithPermission(bestGuid)
+                startBlackTunV2RayWithPermission(connectGuid)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -509,24 +534,146 @@ class MainActivity : HelperBaseActivity(), NavigationView.OnNavigationItemSelect
         }
     }
 
-    private fun findBestBlackTunServer(subId: String): String? {
-        val guids = MmkvManager.decodeServerList(subId)
-        if (guids.isEmpty()) {
-            return null
+    private fun showBlackTunServerSelector() {
+        val source = currentBlackTunSource()
+        if (source == null) {
+            showBlackTunMessage(false, getString(R.string.blacktun_please_login_first))
+            return
         }
-        return guids
-            .map { guid ->
-                val delay = MmkvManager.decodeServerAffiliationInfo(guid)?.testDelayMillis ?: Long.MAX_VALUE
-                val score = when {
-                    delay > 0L -> delay
-                    delay == 0L -> Long.MAX_VALUE - 1L
-                    else -> Long.MAX_VALUE
+        if (blackTunSelectorJob?.isActive == true) {
+            return
+        }
+        blackTunSelectorJob = lifecycleScope.launch {
+            blackTunBinding.blacktunAutoSelectButton.isEnabled = false
+            blackTunBinding.blacktunAutoSelectButton.text = "در حال گرفتن پینگ..."
+            try {
+                pingAndSortBlackTun(source.subId)
+                val items = getBlackTunServerItems(source.subId)
+                if (items.isEmpty()) {
+                    showBlackTunMessage(false, getString(R.string.blacktun_no_best_config))
+                    return@launch
                 }
-                guid to score
+                showBlackTunServerListDialog(items)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                LogUtil.e(AppConfig.TAG, "BlackTun selector failed", e)
+                showBlackTunMessage(false, getString(R.string.blacktun_fetch_failed))
+            } finally {
+                updateBlackTunAutoSelectButton()
             }
-            .sortedWith(compareBy<Pair<String, Long>> { it.second }.thenBy { it.first })
-            .firstOrNull()
-            ?.first
+        }
+    }
+
+    private fun getBlackTunConnectGuid(subId: String): String? {
+        val items = getBlackTunServerItems(subId)
+        if (items.isEmpty()) return null
+        if (blackTunAutoSelect) return items.first().guid
+        val selectedGuid = MmkvManager.decodeSettingsString(PREF_BLACKTUN_SELECTED_GUID, "").orEmpty()
+        val selected = items.firstOrNull { it.guid == selectedGuid }
+        if (selected == null) {
+            blackTunAutoSelect = true
+            MmkvManager.encodeSettings(PREF_BLACKTUN_SELECTED_GUID, "")
+            updateBlackTunAutoSelectButton()
+            return items.first().guid
+        }
+        return selected.guid
+    }
+
+    private fun getBlackTunServerItems(subId: String): List<BlackTunServerItem> {
+        return MmkvManager.decodeServerList(subId)
+            .mapIndexedNotNull { index, guid ->
+                val profile = MmkvManager.decodeServerConfig(guid) ?: return@mapIndexedNotNull null
+                val ping = MmkvManager.decodeServerAffiliationInfo(guid)?.testDelayMillis ?: -1L
+                BlackTunServerItem(
+                    guid = guid,
+                    name = profile.remarks.ifBlank { "کانفیگ ${index + 1}" },
+                    pingMillis = ping
+                )
+            }
+            .sortedWith(compareBy<BlackTunServerItem> { if (it.pingMillis > 0L) it.pingMillis else Int.MAX_VALUE.toLong() }
+                .thenBy { it.name })
+    }
+
+    private fun showBlackTunServerListDialog(items: List<BlackTunServerItem>) {
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(16, 16, 16, 16)
+        }
+        val scroll = ScrollView(this)
+        scroll.addView(container, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        ))
+        val selectedGuid = MmkvManager.decodeSettingsString(PREF_BLACKTUN_SELECTED_GUID, "").orEmpty()
+        container.addView(createBlackTunAutoRow(items.first(), blackTunAutoSelect) {
+            blackTunAutoSelect = true
+            MmkvManager.encodeSettings(PREF_BLACKTUN_SELECTED_GUID, "")
+            updateBlackTunAutoSelectButton()
+            showBlackTunMessage(true, "انتخاب خودکار فعال شد")
+        })
+        items.forEachIndexed { index, item ->
+            container.addView(createBlackTunServerRow(item, index == 0, item.guid == selectedGuid && !blackTunAutoSelect)) {
+                blackTunAutoSelect = false
+                MmkvManager.encodeSettings(PREF_BLACKTUN_SELECTED_GUID, item.guid)
+                updateBlackTunAutoSelectButton()
+                showBlackTunMessage(true, "کانفیگ انتخاب شد: ${item.name}")
+            }
+        }
+        AlertDialog.Builder(this, R.style.BlackTunDialogTheme)
+            .setTitle("لیست کانفیگ‌ها")
+            .setView(scroll)
+            .setPositiveButton("بستن") { dialog, _ -> dialog.dismiss() }
+            .show()
+    }
+
+    private fun createBlackTunAutoRow(
+        bestItem: BlackTunServerItem,
+        isSelected: Boolean,
+        onClick: () -> Unit
+    ): TextView {
+        val pingText = if (bestItem.pingMillis > 0L) "${bestItem.pingMillis}ms" else "پینگ نامشخص"
+        return TextView(this).apply {
+            text = "انتخاب خودکار 🚀\n${bestItem.name} • $pingText"
+            setTextColor(ContextCompat.getColor(this@MainActivity, R.color.colorWhite))
+            textSize = 15f
+            setTypeface(Typeface.DEFAULT, if (isSelected) Typeface.BOLD else Typeface.NORMAL)
+            gravity = Gravity.START or Gravity.CENTER_VERTICAL
+            setPadding(28, 28, 28, 28)
+            background = if (isSelected) ContextCompat.getDrawable(this@MainActivity, R.drawable.bg_blacktun_chip) else null
+            setOnClickListener { onClick() }
+        }
+    }
+
+    private fun createBlackTunServerRow(
+        item: BlackTunServerItem,
+        isBest: Boolean,
+        isSelected: Boolean,
+        onClick: () -> Unit
+    ): TextView {
+        val pingText = if (item.pingMillis > 0L) "${item.pingMillis}ms" else "پینگ نامشخص"
+        val title = if (isBest) "🚀 ${item.name}" else item.name
+        return TextView(this).apply {
+            text = "$title\n$pingText"
+            setTextColor(ContextCompat.getColor(this@MainActivity, R.color.colorWhite))
+            textSize = 15f
+            setTypeface(Typeface.DEFAULT, if (isSelected) Typeface.BOLD else Typeface.NORMAL)
+            gravity = Gravity.START or Gravity.CENTER_VERTICAL
+            setPadding(28, 28, 28, 28)
+            background = if (isSelected) ContextCompat.getDrawable(this@MainActivity, R.drawable.bg_blacktun_chip) else null
+            setOnClickListener { onClick() }
+        }
+    }
+
+    private fun updateBlackTunAutoSelectButton() {
+        val selectedGuid = MmkvManager.decodeSettingsString(PREF_BLACKTUN_SELECTED_GUID, "").orEmpty()
+        val selectedName = if (blackTunAutoSelect || selectedGuid.isBlank()) {
+            null
+        } else {
+            MmkvManager.decodeServerConfig(selectedGuid)?.remarks
+        }
+        blackTunBinding.blacktunAutoSelectButton.text = selectedName?.ifBlank { null } ?: "انتخاب خودکار 🚀"
+        blackTunBinding.blacktunAutoSelectButton.isEnabled = blackTunSelectorJob?.isActive != true
     }
 
     private fun currentBlackTunSource(): BlackTunSource? {
@@ -705,6 +852,7 @@ class MainActivity : HelperBaseActivity(), NavigationView.OnNavigationItemSelect
             setTestState(getString(R.string.connection_not_connected))
             binding.layoutTest.isFocusable = false
 
+            blackTunBinding.blacktunStatus.text = getString(R.string.blacktun_ready)
             blackTunBinding.blacktunConnectButton.text = getString(R.string.blacktun_connect)
             blackTunBinding.blacktunConnectButton.backgroundTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.blacktun_blue))
             blackTunBinding.blacktunConnectButton.contentDescription = getString(R.string.tasker_start_service)
@@ -1172,6 +1320,7 @@ class MainActivity : HelperBaseActivity(), NavigationView.OnNavigationItemSelect
 
     override fun onDestroy() {
         blackTunConnectJob?.cancel()
+        blackTunSelectorJob?.cancel()
         blackTunPermissionContinuation?.cancel()
         blackTunPermissionContinuation = null
         blackTunPermissionInProgress = false

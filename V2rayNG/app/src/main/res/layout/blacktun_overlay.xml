@@ -126,27 +126,79 @@
         app:layout_constraintTop_toBottomOf="@id/blacktun_status"
         app:trackColor="#182335" />
 
+    <com.google.android.material.card.MaterialCardView
+        android:id="@+id/blacktun_selector_card"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="24dp"
+        android:layout_marginTop="18dp"
+        android:layout_marginEnd="24dp"
+        android:visibility="visible"
+        app:cardBackgroundColor="#0B1220"
+        app:cardCornerRadius="18dp"
+        app:cardElevation="0dp"
+        app:strokeColor="#1E3A5F"
+        app:strokeWidth="1dp"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/blacktun_progress">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center"
+            android:orientation="vertical"
+            android:padding="12dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="انتخاب کانفیگ"
+                android:textColor="@color/colorWhite"
+                android:textSize="13sp" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/blacktun_auto_select_button"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:layout_marginTop="8dp"
+                android:fontFamily="sans-serif-medium"
+                android:text="انتخاب خودکار 🚀"
+                android:textColor="@color/colorWhite"
+                android:textSize="14sp"
+                app:backgroundTint="#10213A"
+                app:cornerRadius="16dp"
+                app:rippleColor="#64B5FF"
+                app:strokeColor="#1E88FF"
+                app:strokeWidth="1dp" />
+
+        </LinearLayout>
+
+    </com.google.android.material.card.MaterialCardView>
+
     <LinearLayout
         android:id="@+id/blacktun_buttons"
         android:layout_width="0dp"
         android:layout_height="wrap_content"
         android:layout_marginStart="24dp"
-        android:layout_marginTop="28dp"
+        android:layout_marginTop="14dp"
         android:layout_marginEnd="24dp"
-        android:orientation="vertical"
+        android:orientation="horizontal"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@id/blacktun_progress">
+        app:layout_constraintTop_toBottomOf="@id/blacktun_selector_card">
 
         <com.google.android.material.button.MaterialButton
             android:id="@+id/blacktun_subscription_button"
-            android:layout_width="match_parent"
+            android:layout_width="0dp"
             android:layout_height="56dp"
+            android:layout_marginEnd="6dp"
+            android:layout_weight="1"
             android:fontFamily="sans-serif-medium"
             android:gravity="center"
             android:text="ورود به اشتراک"
             android:textColor="@color/colorWhite"
-            android:textSize="16sp"
+            android:textSize="14sp"
             app:backgroundTint="#10213A"
             app:cornerRadius="18dp"
             app:rippleColor="#1E88FF"
@@ -155,14 +207,15 @@
 
         <com.google.android.material.button.MaterialButton
             android:id="@+id/blacktun_free_button"
-            android:layout_width="match_parent"
+            android:layout_width="0dp"
             android:layout_height="56dp"
-            android:layout_marginTop="14dp"
+            android:layout_marginStart="6dp"
+            android:layout_weight="1"
             android:fontFamily="sans-serif-medium"
             android:gravity="center"
             android:text="🎁 ورود رایگان"
             android:textColor="@color/colorWhite"
-            android:textSize="16sp"
+            android:textSize="14sp"
             app:backgroundTint="#122015"
             app:cornerRadius="18dp"
             app:rippleColor="#35D07F"
