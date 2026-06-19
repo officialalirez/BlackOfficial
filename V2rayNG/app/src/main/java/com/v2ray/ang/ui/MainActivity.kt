@@ -613,12 +613,13 @@ class MainActivity : HelperBaseActivity(), NavigationView.OnNavigationItemSelect
             showBlackTunMessage(true, "انتخاب خودکار فعال شد")
         })
         items.forEachIndexed { index, item ->
-            container.addView(createBlackTunServerRow(item, index == 0, item.guid == selectedGuid && !blackTunAutoSelect)) {
+            val row = createBlackTunServerRow(item, index == 0, item.guid == selectedGuid && !blackTunAutoSelect) {
                 blackTunAutoSelect = false
                 MmkvManager.encodeSettings(PREF_BLACKTUN_SELECTED_GUID, item.guid)
                 updateBlackTunAutoSelectButton()
                 showBlackTunMessage(true, "کانفیگ انتخاب شد: ${item.name}")
             }
+            container.addView(row)
         }
         AlertDialog.Builder(this, R.style.BlackTunDialogTheme)
             .setTitle("لیست کانفیگ‌ها")
