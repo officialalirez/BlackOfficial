@@ -54,6 +54,7 @@ import com.blacktun.hm.handler.SettingsManager
 import com.blacktun.hm.handler.SubscriptionUpdater
 import com.blacktun.hm.util.HttpUtil
 import com.blacktun.hm.util.LogUtil
+import com.blacktun.hm.util.MessageUtil
 import com.blacktun.hm.util.Utils
 import com.blacktun.hm.viewmodel.MainViewModel
 import kotlinx.coroutines.CancellableContinuation
@@ -121,6 +122,8 @@ class MainActivity : HelperBaseActivity(), NavigationView.OnNavigationItemSelect
     private var blackTunAutoSelect = true
     private var blackTunLastSourceKey: String? = null
     private var blackTunLastPingToken = 0
+    private var blackTunPingInProgress = false
+    private var blackTunSelectorDialogWasDismissed = false
 
     private val requestVpnPermission = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
         val continuation = blackTunPermissionContinuation
@@ -413,15 +416,17 @@ class MainActivity : HelperBaseActivity(), NavigationView.OnNavigationItemSelect
         return currentText
     }
 
-    private suspend fun pingAndSortBlackTun(subId: String) {
+    private suspend fun pingAndSortBlackTun(subId: String): Boolean {
         mainViewModel.subscriptionIdChanged(subId)
         mainViewModel.reloadServerList()
         if (mainViewModel.serversCache.isEmpty()) {
             mainViewModel.realPingFinishedAction = null
-            return
+            blackTunPingInProgress = false
+            return false
         }
         val token = ++blackTunLastPingToken
         var finished = false
+        blackTunPingInProgress = true
         mainViewModel.realPingFinishedAction = { status ->
             if (status == "0" && token == blackTunLastPingToken) {
                 finished = true
@@ -433,19 +438,26 @@ class MainActivity : HelperBaseActivity(), NavigationView.OnNavigationItemSelect
             while (!finished && System.currentTimeMillis() < deadline) {
                 delay(250)
             }
+            if (!finished && token == blackTunLastPingToken) {
+                cancelBlackTunPing()
+                delay(500)
+            }
+            markBlackTunUnfinishedPingsAsFailed(subId)
         } finally {
             if (token == blackTunLastPingToken) {
                 mainViewModel.realPingFinishedAction = null
+                blackTunPingInProgress = false
             }
         }
         if (token != blackTunLastPingToken) {
-            return
+            return false
         }
-        mainViewModel.sortByTestResults()
         withContext(Dispatchers.Main) {
+            mainViewModel.sortByTestResults()
             mainViewModel.reloadServerList()
             refreshGroupTabTitles()
         }
+        return true
     }
 
     private suspend fun pingBlackTunInBackground(subId: String, token: Int) {
@@ -454,10 +466,12 @@ class MainActivity : HelperBaseActivity(), NavigationView.OnNavigationItemSelect
         if (mainViewModel.serversCache.isEmpty()) {
             if (token == blackTunLastPingToken) {
                 mainViewModel.realPingFinishedAction = null
+                blackTunPingInProgress = false
             }
             return
         }
         var finished = false
+        blackTunPingInProgress = true
         mainViewModel.realPingFinishedAction = { status ->
             if (status == "0" && token == blackTunLastPingToken) {
                 finished = true
@@ -469,9 +483,27 @@ class MainActivity : HelperBaseActivity(), NavigationView.OnNavigationItemSelect
             while (!finished && System.currentTimeMillis() < deadline) {
                 delay(250)
             }
+            if (!finished && token == blackTunLastPingToken) {
+                cancelBlackTunPing()
+                delay(500)
+            }
+            markBlackTunUnfinishedPingsAsFailed(subId)
+        } catch (e: CancellationException) {
+            if (token == blackTunLastPingToken) {
+                cancelBlackTunPing()
+            }
+            throw e
         } finally {
             if (token == blackTunLastPingToken) {
                 mainViewModel.realPingFinishedAction = null
+                blackTunPingInProgress = false
+                withContext(Dispatchers.Main) {
+                    mainViewModel.sortByTestResults()
+                    mainViewModel.reloadServerList()
+                    refreshGroupTabTitles()
+                    refreshBlackTunServerDialogItems()
+                    updateBlackTunAutoSelectButton()
+                }
             }
         }
         if (token != blackTunLastPingToken) {
@@ -482,6 +514,23 @@ class MainActivity : HelperBaseActivity(), NavigationView.OnNavigationItemSelect
             mainViewModel.reloadServerList()
             refreshGroupTabTitles()
             refreshBlackTunServerDialogItems()
+            updateBlackTunAutoSelectButton()
+        }
+    }
+
+    private fun cancelBlackTunPing() {
+        MessageUtil.sendMsg2TestService(
+            this,
+            com.blacktun.hm.dto.TestServiceMessage(key = AppConfig.MSG_MEASURE_CONFIG_CANCEL)
+        )
+    }
+
+    private fun markBlackTunUnfinishedPingsAsFailed(subId: String) {
+        MmkvManager.decodeServerList(subId).forEach { guid ->
+            val aff = MmkvManager.decodeServerAffiliationInfo(guid)
+            if (aff != null && aff.testDelayMillis <= 0L) {
+                MmkvManager.encodeServerTestDelayMillis(guid, -1L)
+            }
         }
     }
 
@@ -550,11 +599,14 @@ class MainActivity : HelperBaseActivity(), NavigationView.OnNavigationItemSelect
         if (blackTunSelectorJob?.isActive == true) {
             return
         }
-        blackTunConnectJob = lifecycleScope.launch {
+        val job = lifecycleScope.launch {
             blackTunBinding.blacktunConnectButton.isEnabled = false
             showBlackTunLoading(getString(R.string.blacktun_pinging))
             try {
-                pingAndSortBlackTun(source.subId)
+                if (!pingAndSortBlackTun(source.subId)) {
+                    showBlackTunMessage(false, getString(R.string.blacktun_no_best_config))
+                    return@launch
+                }
                 val connectGuid = getBlackTunConnectGuid(source.subId)
                 if (connectGuid.isNullOrBlank()) {
                     showBlackTunMessage(false, getString(R.string.blacktun_no_best_config))
@@ -564,14 +616,17 @@ class MainActivity : HelperBaseActivity(), NavigationView.OnNavigationItemSelect
                 mainViewModel.reloadServerList()
                 refreshGroupTabTitles()
                 showBlackTunMessage(true, getString(R.string.blacktun_selecting_best))
-                startBlackTunV2RayWithPermission(connectGuid)
+                val started = startBlackTunV2RayWithPermission(connectGuid)
+                if (!started) {
+                    throw IllegalStateException("vpn_start_failed")
+                }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 LogUtil.e(AppConfig.TAG, "BlackTun connect failed", e)
                 showBlackTunMessage(false, getString(R.string.blacktun_fetch_failed))
             } finally {
-                if (blackTunConnectJob?.isActive == false) {
+                if (blackTunConnectJob === job) {
                     blackTunConnectJob = null
                 }
                 val active = mainViewModel.isRunning.value == true || CoreServiceManager.isRunning()
@@ -584,12 +639,13 @@ class MainActivity : HelperBaseActivity(), NavigationView.OnNavigationItemSelect
                 applyRunningState(false, active)
             }
         }
+        blackTunConnectJob = job
     }
 
-    private suspend fun startBlackTunV2RayWithPermission(guid: String?) {
+    private suspend fun startBlackTunV2RayWithPermission(guid: String?): Boolean {
         if (CoreServiceManager.isRunning() || mainViewModel.isRunning.value == true) {
             CoreServiceManager.stopVService(this)
-            delay(500)
+            waitForBlackTunStopped()
         }
         if (guid != null) {
             MmkvManager.setSelectServer(guid)
@@ -615,6 +671,25 @@ class MainActivity : HelperBaseActivity(), NavigationView.OnNavigationItemSelect
         } else {
             CoreServiceManager.startVService(this)
         }
+        return waitForBlackTunRunning()
+    }
+
+    private suspend fun waitForBlackTunRunning(timeoutMillis: Long = 5_000L): Boolean {
+        val deadline = System.currentTimeMillis() + timeoutMillis
+        while (System.currentTimeMillis() < deadline) {
+            if (mainViewModel.isRunning.value == true || CoreServiceManager.isRunning()) {
+                return true
+            }
+            delay(100)
+        }
+        return false
+    }
+
+    private suspend fun waitForBlackTunStopped(timeoutMillis: Long = 2_000L) {
+        val deadline = System.currentTimeMillis() + timeoutMillis
+        while ((mainViewModel.isRunning.value == true || CoreServiceManager.isRunning()) && System.currentTimeMillis() < deadline) {
+            delay(100)
+        }
     }
 
     private fun showBlackTunServerSelector() {
@@ -624,13 +699,13 @@ class MainActivity : HelperBaseActivity(), NavigationView.OnNavigationItemSelect
             showBlackTunMessage(false, getString(R.string.blacktun_please_login_first))
             return
         }
-        if (blackTunSelectorJob?.isActive == true) {
-            return
-        }
         if (blackTunConnectJob?.isActive == true) {
             return
         }
-        blackTunSelectorJob = lifecycleScope.launch {
+        blackTunServerDialog?.dismiss()
+        blackTunSelectorJob?.cancel()
+        blackTunSelectorDialogWasDismissed = false
+        val job = lifecycleScope.launch {
             blackTunBinding.blacktunAutoSelectButton.isEnabled = false
             try {
                 mainViewModel.subscriptionIdChanged(source.subId)
@@ -641,6 +716,9 @@ class MainActivity : HelperBaseActivity(), NavigationView.OnNavigationItemSelect
                     return@launch
                 }
                 showBlackTunServerListDialog(items)
+                if (blackTunSelectorDialogWasDismissed) {
+                    return@launch
+                }
                 val token = ++blackTunLastPingToken
                 pingBlackTunInBackground(source.subId, token)
             } catch (e: CancellationException) {
@@ -649,13 +727,17 @@ class MainActivity : HelperBaseActivity(), NavigationView.OnNavigationItemSelect
                 LogUtil.e(AppConfig.TAG, "BlackTun selector failed", e)
                 showBlackTunMessage(false, getString(R.string.blacktun_fetch_failed))
             } finally {
+                if (blackTunSelectorJob === job) {
+                    blackTunSelectorJob = null
+                }
                 updateBlackTunAutoSelectButton()
             }
         }
+        blackTunSelectorJob = job
     }
 
     private fun getBlackTunConnectGuid(subId: String): String? {
-        val items = getBlackTunServerItems(subId)
+        val items = getBlackTunServerItems(subId).filter { it.pingMillis > 0L }
         if (items.isEmpty()) return null
         if (blackTunAutoSelect) return items.first().guid
         val selectedGuid = MmkvManager.decodeSettingsString(PREF_BLACKTUN_SELECTED_GUID, "").orEmpty()
@@ -673,7 +755,12 @@ class MainActivity : HelperBaseActivity(), NavigationView.OnNavigationItemSelect
         return MmkvManager.decodeServerList(subId)
             .mapIndexedNotNull { index, guid ->
                 val profile = MmkvManager.decodeServerConfig(guid) ?: return@mapIndexedNotNull null
-                val ping = MmkvManager.decodeServerAffiliationInfo(guid)?.testDelayMillis ?: -1L
+                val rawPing = MmkvManager.decodeServerAffiliationInfo(guid)?.testDelayMillis ?: -1L
+                val ping = when {
+                    rawPing > 0L -> rawPing
+                    blackTunPingInProgress -> 0L
+                    else -> -1L
+                }
                 BlackTunServerItem(
                     guid = guid,
                     name = profile.remarks.ifBlank { "کانفیگ ${index + 1}" },
@@ -735,6 +822,7 @@ class MainActivity : HelperBaseActivity(), NavigationView.OnNavigationItemSelect
             updateBlackTunAutoSelectButton()
             blackTunServerAdapter?.notifyDataSetChanged()
             refreshBlackTunAutoSelectRow()
+            blackTunServerDialog?.dismiss()
             showBlackTunMessage(true, "کانفیگ انتخاب شد: ${item.name}")
         }
         recyclerView.adapter = blackTunServerAdapter
@@ -744,9 +832,16 @@ class MainActivity : HelperBaseActivity(), NavigationView.OnNavigationItemSelect
             .setView(root)
             .setPositiveButton("بستن") { dialog, _ -> dialog.dismiss() }
             .setOnDismissListener {
+                blackTunSelectorDialogWasDismissed = true
+                if (blackTunSelectorJob?.isActive == true) {
+                    blackTunSelectorJob?.cancel()
+                } else {
+                    blackTunSelectorJob = null
+                }
                 blackTunServerDialog = null
                 blackTunServerAdapter = null
                 blackTunAutoSelectRow = null
+                updateBlackTunAutoSelectButton()
             }
             .show()
     }
@@ -1032,7 +1127,11 @@ class MainActivity : HelperBaseActivity(), NavigationView.OnNavigationItemSelect
     }
 
     private fun formatBlackTunPing(pingMillis: Long): String {
-        return if (pingMillis > 0L) "${pingMillis}ms" else "در حال پینگ..."
+        return when {
+            pingMillis > 0L -> "${pingMillis}ms"
+            blackTunPingInProgress -> "در حال پینگ..."
+            else -> "-1"
+        }
     }
 
     private fun blackTunPingColor(pingMillis: Long): Int {
