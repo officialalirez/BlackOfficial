@@ -600,6 +600,7 @@ class MainActivity : HelperBaseActivity(), NavigationView.OnNavigationItemSelect
             return
         }
         val job = lifecycleScope.launch {
+            val self = coroutineContext[Job]
             blackTunBinding.blacktunConnectButton.isEnabled = false
             showBlackTunLoading(getString(R.string.blacktun_pinging))
             try {
@@ -626,7 +627,7 @@ class MainActivity : HelperBaseActivity(), NavigationView.OnNavigationItemSelect
                 LogUtil.e(AppConfig.TAG, "BlackTun connect failed", e)
                 showBlackTunMessage(false, getString(R.string.blacktun_fetch_failed))
             } finally {
-                if (blackTunConnectJob === job) {
+                if (blackTunConnectJob === self) {
                     blackTunConnectJob = null
                 }
                 val active = mainViewModel.isRunning.value == true || CoreServiceManager.isRunning()
@@ -674,7 +675,7 @@ class MainActivity : HelperBaseActivity(), NavigationView.OnNavigationItemSelect
         return waitForBlackTunRunning()
     }
 
-    private suspend fun waitForBlackTunRunning(timeoutMillis: Long = 5_000L): Boolean {
+    private suspend fun waitForBlackTunRunning(timeoutMillis: Long = 10_000L): Boolean {
         val deadline = System.currentTimeMillis() + timeoutMillis
         while (System.currentTimeMillis() < deadline) {
             if (mainViewModel.isRunning.value == true || CoreServiceManager.isRunning()) {
@@ -706,6 +707,7 @@ class MainActivity : HelperBaseActivity(), NavigationView.OnNavigationItemSelect
         blackTunSelectorJob?.cancel()
         blackTunSelectorDialogWasDismissed = false
         val job = lifecycleScope.launch {
+            val self = coroutineContext[Job]
             blackTunBinding.blacktunAutoSelectButton.isEnabled = false
             try {
                 mainViewModel.subscriptionIdChanged(source.subId)
@@ -727,7 +729,7 @@ class MainActivity : HelperBaseActivity(), NavigationView.OnNavigationItemSelect
                 LogUtil.e(AppConfig.TAG, "BlackTun selector failed", e)
                 showBlackTunMessage(false, getString(R.string.blacktun_fetch_failed))
             } finally {
-                if (blackTunSelectorJob === job) {
+                if (blackTunSelectorJob === self) {
                     blackTunSelectorJob = null
                 }
                 updateBlackTunAutoSelectButton()
