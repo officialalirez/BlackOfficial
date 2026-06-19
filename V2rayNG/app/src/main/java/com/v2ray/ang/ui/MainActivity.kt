@@ -602,12 +602,8 @@ class MainActivity : HelperBaseActivity(), NavigationView.OnNavigationItemSelect
         val job = lifecycleScope.launch {
             val self = coroutineContext[Job]
             blackTunBinding.blacktunConnectButton.isEnabled = false
-            showBlackTunLoading(getString(R.string.blacktun_pinging))
+            showBlackTunLoading(getString(R.string.blacktun_connecting))
             try {
-                if (!pingAndSortBlackTun(source.subId)) {
-                    showBlackTunMessage(false, getString(R.string.blacktun_no_best_config))
-                    return@launch
-                }
                 val connectGuid = getBlackTunConnectGuid(source.subId)
                 if (connectGuid.isNullOrBlank()) {
                     showBlackTunMessage(false, getString(R.string.blacktun_no_best_config))
@@ -619,13 +615,13 @@ class MainActivity : HelperBaseActivity(), NavigationView.OnNavigationItemSelect
                 showBlackTunMessage(true, getString(R.string.blacktun_selecting_best))
                 val started = startBlackTunV2RayWithPermission(connectGuid)
                 if (!started) {
-                    throw IllegalStateException("vpn_start_failed")
+                    showBlackTunMessage(false, getString(R.string.blacktun_start_failed))
                 }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 LogUtil.e(AppConfig.TAG, "BlackTun connect failed", e)
-                showBlackTunMessage(false, getString(R.string.blacktun_fetch_failed))
+                showBlackTunMessage(false, e.message ?: getString(R.string.blacktun_start_failed))
             } finally {
                 if (blackTunConnectJob === self) {
                     blackTunConnectJob = null
@@ -653,9 +649,7 @@ class MainActivity : HelperBaseActivity(), NavigationView.OnNavigationItemSelect
         }
         if (SettingsManager.isVpnMode()) {
             val intent = VpnService.prepare(this)
-            if (intent == null) {
-                CoreServiceManager.startVService(this)
-            } else {
+            if (intent != null) {
                 suspendCancellableCoroutine { continuation ->
                     blackTunPermissionContinuation = continuation
                     blackTunPermissionInProgress = true
@@ -667,11 +661,9 @@ class MainActivity : HelperBaseActivity(), NavigationView.OnNavigationItemSelect
                     }
                     requestVpnPermission.launch(intent)
                 }
-                CoreServiceManager.startVService(this)
             }
-        } else {
-            CoreServiceManager.startVService(this)
         }
+        CoreServiceManager.startVService(this)
         return waitForBlackTunRunning()
     }
 
@@ -739,7 +731,7 @@ class MainActivity : HelperBaseActivity(), NavigationView.OnNavigationItemSelect
     }
 
     private fun getBlackTunConnectGuid(subId: String): String? {
-        val items = getBlackTunServerItems(subId).filter { it.pingMillis > 0L }
+        val items = getBlackTunServerItems(subId)
         if (items.isEmpty()) return null
         if (blackTunAutoSelect) return items.first().guid
         val selectedGuid = MmkvManager.decodeSettingsString(PREF_BLACKTUN_SELECTED_GUID, "").orEmpty()
